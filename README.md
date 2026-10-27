@@ -44,34 +44,21 @@ It removes the binary, `~/.config/trawl` (config + generated keybind files), `~/
 `~/.claude/skills/trawl` and the `# >>> trawl >>>` block in `~/.zshrc` / `~/.bashrc`. Nothing else in your rc files
 is touched.
 
-### Clean install, to try it out
+### Clean install
 
-Install from a fresh clone and point trawl at the mock diagrams in `examples/` (run `./uninstall.sh` from any clone
-first if you installed before):
+From your clone, remove any previous install and install again:
 
 ```sh
-rm -rf /tmp/trawl-test
-git clone https://github.com/snowu/trawl /tmp/trawl-test
-cd /tmp/trawl-test && ./install.sh   # in the folder step, pick /tmp/trawl-test/examples (listed first)
-exec "$SHELL"                        # reload your rc so the keybind is live
+./uninstall.sh --yes && ./install.sh
+exec "$SHELL"   # reload your rc so the keybind is live
 ```
 
-Or without any prompts:
+Then check it works (`examples/` in the repo has mock diagrams of every common type, plus one broken one):
 
 ```sh
-cd /tmp/trawl-test && ./install.sh --yes
-trawl roots remove ~/code ~ && trawl roots add /tmp/trawl-test/examples
-exec "$SHELL"
-```
-
-Then check it works:
-
-```sh
-trawl check /tmp/trawl-test/examples   # expect: broken/typo.md:11 reported, 15/16 diagrams OK, exit 1
-trawl list /tmp/trawl-test/examples    # 16 diagrams, every common type
-trawl roots                            # /tmp/trawl-test/examples
-trawl                                  # picker over the examples (same as alt+m); ctrl+f narrows to subfolders
-trawl open /tmp/trawl-test/examples/planning/roadmap.md:6   # the gantt chart, straight into feh
+trawl check examples   # broken/typo.md:11 reported, 15/16 diagrams OK, exit 1
+trawl examples         # picker over the examples
+trawl                  # picker over your configured folders (same as alt+m)
 ```
 
 ## Usage
