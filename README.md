@@ -39,17 +39,17 @@ Prebuilt binaries for linux/macOS x64/arm64 are also attached to [Releases](../.
 ### Uninstall
 
 ```sh
-rm -rf ~/.local/bin/trawl ~/.config/trawl ~/.cache/trawl ~/.claude/skills/trawl
-for rc in ~/.zshrc ~/.bashrc; do   # drop the keybind block the installer added
-  [ -f "$rc" ] || continue
-  awk '/^# >>> trawl >>>$/ {s=1; next} /^# <<< trawl <<<$/ {s=0; next} !s' "$rc" > "$rc.tmp" && cat "$rc.tmp" > "$rc" && rm "$rc.tmp"
-done
+./uninstall.sh          # lists what it found, asks, then removes it; --yes to skip the question
 ```
+
+It removes the binary, `~/.config/trawl` (config + generated keybind files), `~/.cache/trawl`,
+`~/.claude/skills/trawl` and the `# >>> trawl >>>` block in `~/.zshrc` / `~/.bashrc`. Nothing else in your rc files
+is touched.
 
 ### Clean install, to try it out
 
-Run the [uninstall](#uninstall) commands first if you installed before, then install from a fresh clone and point
-trawl at the mock diagrams in `examples/`:
+Install from a fresh clone and point trawl at the mock diagrams in `examples/` (run `./uninstall.sh` from any clone
+first if you installed before):
 
 ```sh
 rm -rf /tmp/trawl-test
