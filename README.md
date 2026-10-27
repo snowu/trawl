@@ -24,7 +24,8 @@ The installer, re-runnable at any time:
 
 1. builds the binary into `~/.local/bin/trawl`,
 2. asks which folders trawl scans (`trawl roots pick`: fzf over `~`, or type any path),
-3. adds a shell keybind to `~/.zshrc` / `~/.bashrc`: **alt+m** (letter configurable) opens the picker,
+3. adds a shell keybind to `~/.zshrc` / `~/.bashrc`: **alt+m** (letter configurable) opens the picker on the repo
+   you're in,
 4. installs a [Claude Code](https://claude.com/claude-code) skill (`~/.claude/skills/trawl`) so agents run
    `trawl check` on diagrams they write and `trawl open` to show them to you.
 
@@ -58,14 +59,15 @@ Then check it works (`examples/` in the repo has mock diagrams of every common t
 ```sh
 trawl check examples   # broken/typo.md:11 reported, 15/16 diagrams OK, exit 1
 trawl examples         # picker over the examples
-trawl                  # picker over your configured folders (same as alt+m)
+trawl --all            # picker over your configured folders
 ```
 
 ## Usage
 
 ```sh
-trawl                      # picker over your configured folders (the alt+m keybind); current folder if none
-trawl docs ../other-repo   # picker over these instead (`trawl .` for the current folder)
+trawl                      # picker over the git repo you're in (the alt+m keybind); from ~, your configured folders
+trawl --all                # picker over all your configured folders
+trawl docs ../other-repo   # picker over these folders/files
 trawl -b docs              # open in the browser instead of feh
 trawl open docs/a.md:40    # open the diagram at line 40 straight away (no picker)
 trawl list docs            # path:line  type  title, one per line (pipe-friendly)
@@ -94,11 +96,13 @@ Picker keys:
 | enter | open in feh (falls back to the browser when feh isn't installed) |
 | ctrl-o | open in the browser |
 | ctrl-f | choose subfolders of what's being scanned (fzf), then reopen on just those |
+| ctrl-a | reopen on all your configured folders |
 | ←/→ | pan a wide preview |
 | ctrl-t | toggle preview between diagram and source |
 | esc | clear the filter, or quit |
 
-Broken diagrams are marked ✗ in the list; selecting one shows the syntax error with its line instead of a preview.
+The list is grouped by folder. Broken diagrams are marked ✗; selecting one shows the syntax error with its line
+instead of a preview.
 
 Rendered files are cached in `$XDG_CACHE_HOME/trawl` (default `~/.cache/trawl`), keyed by diagram source.
 

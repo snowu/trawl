@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { chooseFolders, pickRoots } from './choose.ts';
@@ -12,9 +13,10 @@ import pkg from '../package.json' with { type: 'json' };
 const HELP = `trawl ${pkg.version}: find, preview and open Mermaid diagrams in markdown files
 
 Usage:
-  trawl                            picker over your configured folders (see \`trawl roots\`), else the current one
-  trawl PATH...                    picker over these folders/files instead (\`trawl .\` for the current folder)
-                                   ctrl+f in the picker narrows to chosen subfolders
+  trawl                            picker over the git repo you're in (else this folder; from ~, your folders)
+  trawl --all                      picker over all your configured folders (see \`trawl roots\`)
+  trawl PATH...                    picker over these folders/files
+                                   in the picker: ctrl+f narrows to subfolders, ctrl+a widens to all folders
   trawl open FILE[:LINE]...        open diagrams without the picker (LINE picks the one at that line)
   trawl list [paths...]            print every diagram as path:line  type  title
   trawl check [paths...]           report diagrams with syntax errors (exit 1 if any)
@@ -28,7 +30,7 @@ Paths can be directories (scanned recursively for .md and .mmd) or files.
 Configured folders live in ${tildePath(CONFIG_PATH)}.
 
 Options:
-  -a, --all            scan the configured folders even when paths are given (they are ignored)
+  -a, --all            scan all configured folders
   -b, --browser        open SVGs in the browser instead of PNGs in feh
   -o, --out DIR        output directory for render (default: ./trawl-out)
   -f, --format FORMAT  png or svg, for render (default: png)
@@ -38,13 +40,30 @@ Options:
 
 const COMMANDS = new Set(['open', 'list', 'check', 'render', 'roots']);
 
-/** Folders to scan, as absolute paths: the given paths, else the configured roots, else the current folder. */
-async function scanPaths(all: boolean | undefined, positionals: string[]): Promise<string[]> {
-  if (positionals.length && !all) return positionals.map((p) => resolve(p));
+/** The git repo containing the current folder, if any. */
+function gitRoot(): string | undefined {
+  const git = Bun.spawnSync(['git', 'rev-parse', '--show-toplevel'], { stderr: 'ignore' });
+  return git.success ? git.stdout.toString().trim() || undefined : undefined;
+}
+
+/**
+ * Folders to scan, as absolute paths. `--all`: the configured roots. Paths given: those. Otherwise
+ * "where I am": the current git repo, else the current folder, except from ~ itself (or /), where
+ * scanning everything below would be slow and noisy, so the configured roots are used instead.
+ */
+export async function scanPaths(all: boolean | undefined, positionals: string[]): Promise<string[]> {
+  if (all) return configuredRoots();
+  if (positionals.length) return positionals.map((p) => resolve(p));
+  const here = gitRoot() ?? process.cwd();
+  if (here !== homedir() && here !== '/') return [here];
   const { roots } = await loadConfig();
-  if (roots.length) return roots;
-  if (all) throw new Error('--all needs folders: run `trawl roots pick` or `trawl roots add DIR`');
-  return [resolve('.')];
+  return roots.length ? roots : [here];
+}
+
+async function configuredRoots(): Promise<string[]> {
+  const { roots } = await loadConfig();
+  if (!roots.length) throw new Error('no folders configured: run `trawl roots pick` or `trawl roots add DIR`');
+  return roots;
 }
 
 /** `trawl roots [pick | add DIR... | remove DIR...]` */
@@ -168,15 +187,15 @@ async function main(): Promise<number> {
   }
   const { runPicker } = await import('./ui.tsx');
   let current = diagrams;
-  // ctrl+f in the picker closes it to choose folders (inside the scanned paths) with fzf; then reopen on those.
+  // ctrl+f / ctrl+a close the picker to rescan: chosen subfolders (fzf) or every configured folder; then reopen.
+  let scope = paths;
   while (true) {
-    if (!current.length) {
-      console.error('trawl: no mermaid diagrams found');
-      return 1;
-    }
-    if ((await runPicker(current, viewer)) !== 'choose') return 0;
-    const chosen = await chooseFolders(paths);
-    if (chosen.length) current = await scan(chosen);
+    const result = await runPicker(current, scope, viewer);
+    if (result === 'quit') return 0;
+    const next = result === 'all' ? (await loadConfig()).roots : await chooseFolders(scope);
+    if (!next.length) continue; // fzf cancelled, or no folders configured: back to the same list
+    scope = next;
+    current = await scan(scope);
   }
 }
 

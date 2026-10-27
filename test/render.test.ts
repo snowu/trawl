@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { check, formatProblem } from '../src/commands.ts';
 import { inlineCssVars, svgToPng, toAscii, toSvg } from '../src/render.ts';
 import { extract } from '../src/scan.ts';
-import { filterDiagrams } from '../src/ui.tsx';
+import { colorRuns, filterDiagrams, folderLabel, groupRows } from '../src/ui.tsx';
 
 const FLOW = 'flowchart LR\n  A[Start] --> B[End]';
 
@@ -49,5 +49,32 @@ describe('filterDiagrams', () => {
     expect(filterDiagrams(diagrams, 'login seq').map((d) => d.title)).toEqual(['Login']);
     expect(filterDiagrams(diagrams, 'FLOWCHART').map((d) => d.title)).toEqual(['flow']);
     expect(filterDiagrams(diagrams, '')).toHaveLength(2);
+  });
+});
+
+describe('grouping', () => {
+  const md = (file: string) => extract(file, '```mermaid\ngraph TD\n  A\n```\n');
+
+  test('folderLabel is relative to the scanned root, prefixed by the root name when there are several', () => {
+    expect(folderLabel('/r/docs/arch/a.md', ['/r'])).toBe('docs/arch/');
+    expect(folderLabel('/r/a.md', ['/r'])).toBe('r/');
+    expect(folderLabel('/code/svc/docs/a.md', ['/code', '/notes'])).toBe('code/svc/docs/');
+  });
+
+  test('groupRows puts each folder under one header, root first, then folders sorted', () => {
+    const diagrams = [...md('/r/docs/z.md'), ...md('/r/a.md'), ...md('/r/docs/b.md'), ...md('/r/arch/c.md')];
+    const rows = groupRows(diagrams, ['/r']).map((row) => ('header' in row ? `# ${row.header}` : row.diagram.file));
+    expect(rows).toEqual(['# r/', '/r/a.md', '# arch/', '/r/arch/c.md', '# docs/', '/r/docs/b.md', '/r/docs/z.md']);
+  });
+});
+
+describe('colorRuns', () => {
+  test('splits box lines, arrowheads and label text', () => {
+    expect(colorRuns('│ Shop ├──►')).toEqual([
+      { text: '│', kind: 'line' },
+      { text: ' Shop ', kind: 'text' },
+      { text: '├──', kind: 'line' },
+      { text: '►', kind: 'arrow' },
+    ]);
   });
 });
