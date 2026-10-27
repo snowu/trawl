@@ -55,11 +55,15 @@ export async function chooseFolders(roots: string[]): Promise<string[]> {
   return pickFolders(await listFolders(roots), 'scan only these (tab: several · enter: scan · esc: cancel)');
 }
 
-/** Any folder under ~ (or a typed path), for setting the configured roots. */
-export async function pickRoots(): Promise<string[]> {
-  const picked = await pickFolders(
-    await listFolders([homedir()]),
-    'folders trawl scans (tab: several · enter: save · or type any path · esc: cancel)',
-  );
+/**
+ * Any folder under ~ (or a typed path), for setting the configured roots. The current folder's tree comes
+ * first, so a clone outside ~ (e.g. /tmp/trawl-test when the installer runs from it) is listed too.
+ */
+export async function pickRoots(cwd = process.cwd()): Promise<string[]> {
+  const home = homedir();
+  const here = cwd === home ? [] : await listFolders([cwd]);
+  const seen = new Set(here);
+  const folders = [...here, ...(await listFolders([home])).filter((f) => !seen.has(f))];
+  const picked = await pickFolders(folders, 'folders trawl scans (tab: several · enter: save · or type any path · esc: cancel)');
   return picked.filter(isDir);
 }

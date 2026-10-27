@@ -52,7 +52,7 @@ first if you installed before):
 ```sh
 rm -rf /tmp/trawl-test
 git clone https://github.com/snowu/trawl /tmp/trawl-test
-cd /tmp/trawl-test && ./install.sh   # in the folder step, type /tmp/trawl-test/examples + enter
+cd /tmp/trawl-test && ./install.sh   # in the folder step, pick /tmp/trawl-test/examples (listed first)
 exec "$SHELL"                        # reload your rc so the keybind is live
 ```
 

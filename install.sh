@@ -107,7 +107,8 @@ fi
 if [[ "$pick_roots" -eq 1 && "$ASSUME_YES" -eq 0 ]]; then
   dim "\`trawl\` scans these folders. Change them any time with \`trawl roots pick\` or \`trawl roots add DIR\`."
   if command -v fzf >/dev/null 2>&1; then
-    "$TRAWL" roots pick >/dev/null || true
+    # Run from the clone so its folders (e.g. examples/) are listed first, even when the clone is outside ~.
+    (cd "$DIR" && "$TRAWL" roots pick >/dev/null) || true
   else
     ask_value "Folder to scan (fzf not found; add more later with \`trawl roots add DIR\`)" "$HOME/code"
     "$TRAWL" roots add "${REPLY_VALUE/#\~/$HOME}" >/dev/null || true
