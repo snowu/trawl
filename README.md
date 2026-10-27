@@ -99,7 +99,9 @@ Picker keys:
 | ctrl-o | open in the browser |
 | ctrl-f | choose subfolders of what's being scanned (fzf), then reopen on just those |
 | ctrl-a | reopen on all your configured folders |
-| ←/→ | pan a wide preview |
+| ←/→ | previous / next folder |
+| shift ←/→ | pan a wide text preview |
+| mouse | click a row to select it, wheel over the list to move; over an image: wheel zooms, drag pans, right-click resets |
 | ctrl-t | toggle preview between diagram and source |
 | esc | clear the filter, or quit |
 

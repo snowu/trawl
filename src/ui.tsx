@@ -1,9 +1,22 @@
 import { Box, render, Text, useApp, useInput, useWindowSize } from 'ink';
 import { basename, dirname, relative } from 'node:path';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { check } from './commands.ts';
 import { openDiagrams, type Viewer } from './open.ts';
-import { clearImage, hideImage, imagesSupported, placeImage, transmitImage } from './kitty.ts';
+import {
+  clearImage,
+  FULL_VIEW,
+  imageArea,
+  hideImage,
+  imagesSupported,
+  queryCellAspect,
+  panBy,
+  placeImage,
+  transmitImage,
+  type Viewport,
+  zoomAt,
+} from './kitty.ts';
+import { MOUSE_OFF, MOUSE_ON, parseMouse } from './mouse.ts';
 import { renderToCache, toAscii } from './render.ts';
 import { type Diagram, displayPath, tildePath } from './scan.ts';
 
@@ -21,8 +34,6 @@ export function filterDiagrams(diagrams: Diagram[], query: string): Diagram[] {
 
 const asciiCache = new Map<Diagram, string | null>();
 
-/** Real rendered PNGs in the preview pane (Ghostty, kitty, WezTerm); colored ASCII elsewhere. */
-const IMAGES = imagesSupported();
 
 type Run = { text: string; kind: 'line' | 'arrow' | 'text' };
 // Box drawing, the corner glyphs used for some node shapes, and diamonds; then arrowheads.
@@ -101,10 +112,12 @@ interface PickerProps {
   /** The scanned folders, for the group headers. */
   roots: string[];
   viewer: Viewer;
+  /** Real rendered PNGs in the preview pane (Ghostty, kitty, WezTerm); colored ASCII otherwise. */
+  images: boolean;
   onDone: (r: PickerResult) => void;
 }
 
-function Picker({ diagrams, roots, viewer, onDone }: PickerProps) {
+export function Picker({ diagrams, roots, viewer, images, onDone }: PickerProps) {
   const { exit } = useApp();
   const { columns, rows } = useWindowSize();
   const [query, setQuery] = useState('');
@@ -119,17 +132,25 @@ function Picker({ diagrams, roots, viewer, onDone }: PickerProps) {
   // The cursor walks the grouped order shown on screen, not the scan order.
   const rowList = useMemo(() => groupRows(filtered, roots), [filtered, roots]);
   const ordered = useMemo(() => rowList.flatMap((r) => ('diagram' in r ? [r.diagram] : [])), [rowList]);
-  const current = ordered[Math.min(cursor, ordered.length - 1)];
+  const cursorIndex = Math.min(cursor, ordered.length - 1);
+  const current = ordered[cursorIndex];
+  /** Index of the first diagram of the previous/next folder group (the current group's start when going back mid-group). */
+  const folderJump = (dir: -1 | 1): number => {
+    const starts = rowList.flatMap((r, i) => ('header' in r ? [rowList.slice(0, i).filter((x) => 'diagram' in x).length] : []));
+    if (dir === 1) return starts.find((s) => s > cursorIndex) ?? cursorIndex;
+    return starts.filter((s) => s < cursorIndex).at(-1) ?? 0;
+  };
   // Frame is rows - 1 tall: header (1) + bordered body (bodyHeight + 2) + footer (1).
   const bodyHeight = Math.max(3, rows - 5);
   const listWidth = Math.min(64, Math.floor(columns * 0.38));
   const previewWidth = columns - listWidth;
 
-  const move = (delta: number) => {
-    setCursor((c) => Math.max(0, Math.min(filtered.length - 1, c + delta)));
+  const select = (index: number) => {
+    setCursor(Math.max(0, Math.min(filtered.length - 1, index)));
     setPanX(0);
     setStatus(null);
   };
+  const move = (delta: number) => select(cursorIndex + delta);
 
   const open = (targets: Diagram[], how: Viewer) => {
     const broken = targets.filter((d) => problems.has(d));
@@ -156,8 +177,10 @@ function Picker({ diagrams, roots, viewer, onDone }: PickerProps) {
     if (key.downArrow || (key.ctrl && input === 'n')) return move(1);
     if (key.pageUp) return move(-bodyHeight);
     if (key.pageDown) return move(bodyHeight);
-    if (key.leftArrow) return setPanX((x) => Math.max(0, x - PAN_STEP));
-    if (key.rightArrow) return setPanX((x) => x + PAN_STEP);
+    // ←/→ jump between folder groups; shift+←/→ pan a wide text preview.
+    if (key.shift && key.leftArrow) return setPanX((x) => Math.max(0, x - PAN_STEP));
+    if (key.shift && key.rightArrow) return setPanX((x) => x + PAN_STEP);
+    if (key.leftArrow || key.rightArrow) return select(folderJump(key.leftArrow ? -1 : 1));
     if (key.ctrl && input === 't') return setShowSource((s) => !s);
     if (key.ctrl && (input === 'f' || input === 'a')) {
       onDone(input === 'f' ? 'choose' : 'all');
@@ -195,7 +218,7 @@ function Picker({ diagrams, roots, viewer, onDone }: PickerProps) {
   const problem = current && problems.get(current);
   const [imageError, setImageError] = useState<Diagram | null>(null);
   // A diagram whose PNG failed to render falls back to the ASCII preview.
-  const imageMode = IMAGES && !!current && !problem && !showSource && imageError !== current;
+  const imageMode = images && !!current && !problem && !showSource && imageError !== current;
   const ascii = current && !showSource && !problem && !imageMode ? asciiPreview(current) : null;
 
   // Image preview: render the PNG (cached) once the cursor rests, upload it, then place it after every redraw.
@@ -219,12 +242,15 @@ function Picker({ diagrams, roots, viewer, onDone }: PickerProps) {
     };
   }, [current, imageMode]);
   const shown = imageMode && image?.diagram === current ? image : null;
-  // Pane interior below the title line and its margin; the last two rows are kept for the hint line and a gap.
-  const imageBox = { row: 5, col: listWidth + 3, cols: previewWidth - 4, rows: bodyHeight - 4 };
+  // Zoom/pan of the image preview, reset for every diagram.
+  const [view, setView] = useState<Viewport>(FULL_VIEW);
+  useEffect(() => setView(FULL_VIEW), [current]);
+  // Pane interior below the title line and its margin.
+  const imageBox = { row: 5, col: listWidth + 3, cols: previewWidth - 4, rows: bodyHeight - 2 };
   useEffect(() => {
-    if (!IMAGES) return;
+    if (!images) return;
     // After Ink has written this frame: text redraws don't remove images, so place (or hide) explicitly.
-    const timer = setTimeout(() => process.stdout.write(shown ? placeImage(shown.png, imageBox) : hideImage()), 30);
+    const timer = setTimeout(() => process.stdout.write(shown ? placeImage(shown.png, imageBox, view) : hideImage()), 30);
     return () => clearTimeout(timer);
   });
   const previewBody = ascii ?? current?.source ?? '';
@@ -235,6 +261,58 @@ function Picker({ diagrams, roots, viewer, onDone }: PickerProps) {
   const hiddenRight = Math.max(...allLines.map((l) => l.length)) > panX + artWidth;
   const hiddenBelow = allLines.length - previewLines.length;
 
+  // Mouse: the stdin listener lives outside React, so it reads the latest layout through a ref.
+  const latest = useRef({ visible, ordered, listWidth, bodyHeight, shown, imageBox, view });
+  latest.current = { visible, ordered, listWidth, bodyHeight, shown, imageBox, view };
+  const drag = useRef<{ col: number; row: number; view: Viewport } | null>(null);
+  useEffect(() => {
+    process.stdout.write(MOUSE_ON);
+    const onData = (chunk: Buffer | string) => {
+      for (const event of parseMouse(chunk.toString())) {
+        const { visible, ordered, listWidth, bodyHeight, shown, imageBox, view } = latest.current;
+        // List rows start on terminal row 3 (header line, then the box's top border).
+        const listRow = event.row - 3;
+        if (event.col <= listWidth && listRow >= 0 && listRow < bodyHeight) {
+          if (event.kind === 'wheel-up' || event.kind === 'wheel-down') {
+            setCursor((c) => Math.max(0, Math.min(ordered.length - 1, c + (event.kind === 'wheel-up' ? -1 : 1))));
+          } else if (event.kind === 'press' && event.button === 'left' && visible[listRow]) {
+            // A header selects its folder's first diagram.
+            const target = visible.slice(listRow).find((r) => 'diagram' in r);
+            if (target && 'diagram' in target) {
+              setCursor(ordered.indexOf(target.diagram));
+              setStatus(null);
+            }
+          }
+          continue;
+        }
+        if (!shown) continue;
+        const cells = imageArea(shown.png, imageBox);
+        const fx = (event.col - cells.col + 0.5) / cells.cols;
+        const fy = (event.row - cells.row + 0.5) / cells.rows;
+        const onImage = fx >= 0 && fx <= 1 && fy >= 0 && fy <= 1;
+        if (event.kind === 'drag' && drag.current) {
+          const start = drag.current;
+          setView(panBy(shown.png, start.view, (event.col - start.col) / cells.cols, (event.row - start.row) / cells.rows));
+        } else if (event.kind === 'release') {
+          drag.current = null;
+        } else if (!onImage) {
+          continue;
+        } else if (event.kind === 'wheel-up' || event.kind === 'wheel-down') {
+          setView(zoomAt(shown.png, view, event.kind === 'wheel-up' ? 1.25 : 0.8, fx, fy));
+        } else if (event.kind === 'press' && event.button === 'left') {
+          drag.current = { col: event.col, row: event.row, view };
+        } else if (event.kind === 'press' && event.button === 'right') {
+          setView(FULL_VIEW);
+        }
+      }
+    };
+    process.stdin.on('data', onData);
+    return () => {
+      process.stdin.off('data', onData);
+      process.stdout.write(MOUSE_OFF);
+    };
+  }, []);
+
   const keys: [string, string][] = [
     ['enter', `open in ${viewer}`],
     ['ctrl-o', 'browser'],
@@ -242,7 +320,8 @@ function Picker({ diagrams, roots, viewer, onDone }: PickerProps) {
     ['ctrl-f', 'subfolders'],
     ['ctrl-a', 'all folders'],
     ['ctrl-t', showSource ? 'diagram' : 'source'],
-    ...(imageMode ? [] : [['←/→', 'pan'] as [string, string]]),
+    ['←/→', 'folders'],
+    ...(imageMode ? [['wheel/drag', 'zoom/pan'] as [string, string]] : [['shift ←/→', 'pan'] as [string, string]]),
     ['esc', query ? 'clear' : 'quit'],
   ];
 
@@ -298,6 +377,8 @@ function Picker({ diagrams, roots, viewer, onDone }: PickerProps) {
             <>
               <Text wrap="truncate">
                 <Text bold>{current.title}</Text>
+                {/* Zoom state first: the rest of the line may be truncated. */}
+                <Text color="cyan">{shown && view.zoom > 1 ? `  ${view.zoom.toFixed(1)}× (right-click resets)` : ''}</Text>
                 <Text dimColor>
                   {'  '}
                   {current.type ?? '?'} · {displayPath(current.file)}:{current.line}
@@ -319,11 +400,9 @@ function Picker({ diagrams, roots, viewer, onDone }: PickerProps) {
                     ))}
                 </Box>
               ) : null}
-              {imageMode ? (
-                <Box flexDirection="column" marginTop={1} height={bodyHeight - 2} justifyContent="flex-end">
-                  <Text dimColor>
-                    {shown ? 'enter: open full size' : 'rendering…'}
-                  </Text>
+              {imageMode && !shown ? (
+                <Box marginTop={1}>
+                  <Text dimColor>rendering…</Text>
                 </Box>
               ) : null}
               <Box flexDirection="column" marginTop={imageMode ? 0 : 1}>
@@ -393,10 +472,14 @@ export async function runPicker(diagrams: Diagram[], roots: string[], viewer: Vi
   // Ink switches screens without homing the cursor, so a keybind fired mid-prompt would draw the first
   // row at the prompt's column: enter the alternate screen and home the cursor ourselves first.
   process.stdout.write('\x1b[?1049h\x1b[H');
-  const app = render(<Picker diagrams={diagrams} roots={roots} viewer={viewer} onDone={(r) => (result = r)} />, {
+  const images = imagesSupported();
+  if (images) await queryCellAspect();
+  const app = render(<Picker diagrams={diagrams} roots={roots} viewer={viewer} images={images} onDone={(r) => (result = r)} />, {
     alternateScreen: true,
   });
   await app.waitUntilExit();
-  if (IMAGES) process.stdout.write(clearImage());
+  // Restore the terminal even if the effect cleanups did not get to run.
+  process.stdout.write(MOUSE_OFF);
+  if (images) process.stdout.write(clearImage());
   return result;
 }

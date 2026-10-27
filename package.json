@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "description": "Find, preview and open Mermaid diagrams in markdown files",
   "type": "module",
-  "bin": { "trawl": "src/cli.ts" },
+  "bin": {
+    "trawl": "src/cli.ts"
+  },
   "files": ["src", "fonts"],
   "scripts": {
     "test": "bun test",
@@ -21,6 +23,7 @@
   "devDependencies": {
     "@types/bun": "latest",
     "@types/react": "^19.3.0",
+    "ink-testing-library": "4.0.0",
     "typescript": "^5.9.0"
   },
   "license": "MIT"

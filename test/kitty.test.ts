@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { fitCells, imagesSupported, pngSize, transmitImage } from '../src/kitty.ts';
+import { FULL_VIEW, fitCells, imagesSupported, panBy, pngSize, transmitImage, zoomAt } from '../src/kitty.ts';
+import { parseMouse } from '../src/mouse.ts';
 
 /** A PNG header with the given size (enough for pngSize / fitCells, which only read IHDR). */
 function fakePng(width: number, height: number): Uint8Array {
@@ -37,5 +38,32 @@ describe('transmitImage', () => {
     const seq = transmitImage(new Uint8Array(6000)); // 8000 base64 chars -> 2 chunks
     const chunks = [...seq.matchAll(/\x1b_G([^;\x1b]*);/g)].map((m) => m[1]);
     expect(chunks).toEqual(['a=t,f=100,i=7341,q=2,m=1', 'm=0']);
+  });
+});
+
+describe('viewport', () => {
+  const png = fakePng(1000, 500);
+
+  test('zoomAt keeps the point under the pointer fixed and stays inside the image', () => {
+    const view = zoomAt(png, FULL_VIEW, 2, 0.5, 0.5);
+    expect(view).toEqual({ zoom: 2, x: 250, y: 125 });
+    expect(zoomAt(png, FULL_VIEW, 2, 0, 0)).toEqual({ zoom: 2, x: 0, y: 0 });
+    expect(zoomAt(png, view, 0.1, 0.5, 0.5)).toEqual(FULL_VIEW); // can't zoom out past fit
+  });
+
+  test('panBy moves the content with the drag, clamped at the edges', () => {
+    const view = zoomAt(png, FULL_VIEW, 2, 0.5, 0.5);
+    expect(panBy(png, view, 0.1, 0)).toEqual({ zoom: 2, x: 200, y: 125 }); // drag right shows more of the left
+    expect(panBy(png, view, -5, -5)).toEqual({ zoom: 2, x: 500, y: 250 });
+  });
+
+  test('parseMouse decodes SGR clicks, drags, releases and the wheel', () => {
+    expect(parseMouse('\x1b[<0;10;5M\x1b[<32;11;5M\x1b[<0;11;5m\x1b[<65;3;4M\x1b[<2;1;1M')).toEqual([
+      { kind: 'press', button: 'left', col: 10, row: 5 },
+      { kind: 'drag', button: 'left', col: 11, row: 5 },
+      { kind: 'release', button: 'left', col: 11, row: 5 },
+      { kind: 'wheel-down', button: 'middle', col: 3, row: 4 },
+      { kind: 'press', button: 'right', col: 1, row: 1 },
+    ]);
   });
 });
