@@ -36,8 +36,45 @@ terminal's Option key to send Esc/Meta).
 
 Prebuilt binaries for linux/macOS x64/arm64 are also attached to [Releases](../../releases) if you only want the CLI.
 
-To uninstall: delete `~/.local/bin/trawl`, `~/.config/trawl`, `~/.claude/skills/trawl` and the `# >>> trawl >>>` block
-in your shell rc.
+### Uninstall
+
+```sh
+rm -rf ~/.local/bin/trawl ~/.config/trawl ~/.cache/trawl ~/.claude/skills/trawl
+for rc in ~/.zshrc ~/.bashrc; do   # drop the keybind block the installer added
+  [ -f "$rc" ] || continue
+  awk '/^# >>> trawl >>>$/ {s=1; next} /^# <<< trawl <<<$/ {s=0; next} !s' "$rc" > "$rc.tmp" && cat "$rc.tmp" > "$rc" && rm "$rc.tmp"
+done
+```
+
+### Clean install, to try it out
+
+Run the [uninstall](#uninstall) commands first if you installed before, then install from a fresh clone and point
+trawl at the mock diagrams in `examples/`:
+
+```sh
+rm -rf /tmp/trawl-test
+git clone https://github.com/snowu/trawl /tmp/trawl-test
+cd /tmp/trawl-test && ./install.sh   # in the folder step, pick /tmp/trawl-test/examples
+exec "$SHELL"                        # reload your rc so the keybinds are live
+```
+
+Or without any prompts:
+
+```sh
+cd /tmp/trawl-test && ./install.sh --yes
+echo '{"roots": ["/tmp/trawl-test/examples"]}' > ~/.config/trawl/config.json
+exec "$SHELL"
+```
+
+Then check it works:
+
+```sh
+trawl check /tmp/trawl-test/examples   # expect: broken/typo.md:11 reported, 15/16 diagrams OK, exit 1
+trawl list /tmp/trawl-test/examples    # 16 diagrams, every common type
+trawl --all                            # picker over the examples (same as ctrl+alt+d)
+trawl --choose                         # fzf over examples/ subfolders first (same as ctrl+alt+f)
+trawl open /tmp/trawl-test/examples/planning/roadmap.md:6   # the gantt chart, straight into feh
+```
 
 ## Usage
 
