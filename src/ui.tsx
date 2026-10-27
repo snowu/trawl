@@ -158,10 +158,7 @@ export function Picker({ diagrams, roots, viewer, images, onDone }: PickerProps)
     if (broken.length) setStatus({ text: `skipped ${broken.length} broken: ${broken.map((d) => d.title).join(', ')}`, error: true });
     if (!ok.length) return;
     setStatus({ text: `rendering ${ok.length}…` });
-    openDiagrams(
-      ok.map((d) => d.source),
-      how,
-    ).then(
+    openDiagrams(ok, how).then(
       () => setStatus({ text: `opened ${ok.length} in ${how}${broken.length ? `, skipped ${broken.length} broken` : ''}` }),
       (e) => setStatus({ text: e instanceof Error ? e.message.split('\n')[0] : String(e), error: true }),
     );

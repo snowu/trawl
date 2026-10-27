@@ -121,10 +121,7 @@ async function openCommand(args: string[], viewer: Viewer): Promise<number> {
     console.error('trawl: open needs at least one FILE[:LINE]');
     return 2;
   }
-  await openDiagrams(
-    selected.map((d) => d.source),
-    viewer,
-  );
+  await openDiagrams(selected, viewer);
   return 0;
 }
 

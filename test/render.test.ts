@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { check, formatProblem } from '../src/commands.ts';
+import { diagramPage } from '../src/open.ts';
 import { inlineCssVars, svgToPng, toAscii, toSvg } from '../src/render.ts';
 import { extract } from '../src/scan.ts';
 import { colorRuns, filterDiagrams, folderLabel, groupRows } from '../src/ui.tsx';
@@ -76,5 +77,13 @@ describe('colorRuns', () => {
       { text: '├──', kind: 'line' },
       { text: '►', kind: 'arrow' },
     ]);
+  });
+});
+
+describe('diagramPage', () => {
+  test('wraps the SVG in a titled page, escaping the title', () => {
+    const page = diagramPage({ title: 'A <b> & "c"', source: FLOW });
+    expect(page).toContain('<title>A &lt;b&gt; &amp; &quot;c&quot; · trawl</title>');
+    expect(page).toContain('<svg');
   });
 });
