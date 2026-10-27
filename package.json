@@ -1,0 +1,27 @@
+{
+  "name": "trawl",
+  "version": "0.1.0",
+  "description": "Find, preview and open Mermaid diagrams in markdown files",
+  "type": "module",
+  "bin": { "trawl": "src/cli.ts" },
+  "files": ["src", "fonts"],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "build": "bun build --compile --minify src/cli.ts --outfile bin/trawl"
+  },
+  "dependencies": {
+    "@resvg/resvg-wasm": "2.6.2",
+    "beautiful-mermaid": "1.1.3",
+    "ink": "8.0.0",
+    "pele": "1.12.0",
+    "react": "19.3.1",
+    "react-devtools-core": "file:./stubs/react-devtools-core"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/react": "^19.3.0",
+    "typescript": "^5.9.0"
+  },
+  "license": "MIT"
+}

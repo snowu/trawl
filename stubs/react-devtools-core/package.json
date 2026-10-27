@@ -1,0 +1,7 @@
+{
+  "name": "react-devtools-core",
+  "version": "0.0.0",
+  "description": "No-op stub: Ink imports react-devtools-core optionally, which breaks `bun build --compile` when it's absent",
+  "type": "module",
+  "main": "index.js"
+}

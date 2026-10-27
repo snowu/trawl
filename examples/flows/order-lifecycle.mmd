@@ -1,0 +1,15 @@
+---
+title: Order lifecycle
+---
+stateDiagram-v2
+  [*] --> Draft
+  Draft --> Placed: checkout
+  Placed --> Paid: payment authorized
+  Placed --> Cancelled: payment declined
+  Paid --> Shipped: courier pickup
+  Paid --> Cancelled: customer cancels
+  Shipped --> Delivered
+  Shipped --> Returned: return requested
+  Delivered --> [*]
+  Returned --> [*]
+  Cancelled --> [*]

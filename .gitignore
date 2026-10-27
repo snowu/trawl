@@ -1,0 +1,4 @@
+node_modules/
+bin/
+# Overrides a global `examples/` ignore some setups have: the mock diagrams are part of the repo.
+!examples/
