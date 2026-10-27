@@ -1,6 +1,6 @@
-import { Glob } from 'bun';
+import { readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { relative, resolve } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import { detectType } from 'pele';
 
 export interface Diagram {
@@ -55,18 +55,29 @@ export async function scan(paths: string[]): Promise<Diagram[]> {
       files.add(root);
       continue;
     }
-    // Glob skips dot-dirs (.git, .venv, ...) by default.
-    for await (const rel of new Glob('**/*.{md,mmd}').scan({ cwd: root, onlyFiles: true })) {
-      if (rel.split('/').some((part) => SKIP_DIRS.has(part))) continue;
-      files.add(resolve(root, rel));
-    }
+    for (const file of await findMarkdown(root)) files.add(file);
   }
 
-  const diagrams: Diagram[] = [];
-  for (const file of [...files].sort()) {
-    diagrams.push(...extract(file, await Bun.file(file).text()));
-  }
-  return diagrams;
+  const sorted = [...files].sort();
+  const texts = await Promise.all(sorted.map((f) => Bun.file(f).text()));
+  return sorted.flatMap((file, i) => extract(file, texts[i]));
+}
+
+/**
+ * Every .md/.mmd file under root. Prunes dot-dirs and SKIP_DIRS without entering them (a glob walks
+ * every node_modules first and filters after: 33s vs <1s on a ~/code full of repos), and walks
+ * sibling folders in parallel. Symlinked folders are not followed, so link cycles can't loop.
+ */
+async function findMarkdown(root: string): Promise<string[]> {
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+  const nested = await Promise.all(
+    entries.map((e) => {
+      const path = join(root, e.name);
+      if (e.isDirectory()) return e.name.startsWith('.') || SKIP_DIRS.has(e.name) ? [] : findMarkdown(path);
+      return e.isFile() && /\.(md|mmd)$/.test(e.name) ? [path] : [];
+    }),
+  );
+  return nested.flat();
 }
 
 /** `/home/me/x` -> `~/x` */

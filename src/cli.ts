@@ -132,7 +132,11 @@ async function main(): Promise<number> {
   if (command === 'roots') return rootsCommand(positionals);
 
   const paths = await scanPaths(values.all, positionals);
+  // Big roots take a moment: show something, then clear the line.
+  const showProgress = command === 'pick' && process.stderr.isTTY;
+  if (showProgress) process.stderr.write(`trawl: scanning ${paths.map(tildePath).join(', ')}…`);
   const diagrams = await scan(paths);
+  if (showProgress) process.stderr.write('\r\x1b[K');
 
   switch (command) {
     case 'list':
