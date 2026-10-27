@@ -1,8 +1,9 @@
+import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 export interface Config {
-  /** Folders scanned by `--all` and offered by `--choose`. */
+  /** Folders bare `trawl` scans; manage them with `trawl roots`. */
   roots: string[];
 }
 
@@ -10,6 +11,14 @@ export const CONFIG_PATH = join(process.env.XDG_CONFIG_HOME || join(homedir(), '
 
 export function expandHome(path: string): string {
   return resolve(path.replace(/^~(?=$|\/)/, homedir()));
+}
+
+/** Writes the roots, ~-relative so the file reads well and works for any user. */
+export async function saveConfig(config: Config, path = CONFIG_PATH): Promise<void> {
+  const home = homedir();
+  const roots = [...new Set(config.roots)].map((r) => (r === home || r.startsWith(`${home}/`) ? `~${r.slice(home.length)}` : r));
+  await mkdir(dirname(path), { recursive: true });
+  await Bun.write(path, `${JSON.stringify({ roots }, null, 2)}\n`);
 }
 
 /** Reads the config file; a missing file means no roots. */

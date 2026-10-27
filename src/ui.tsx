@@ -1,5 +1,6 @@
 import { Box, render, Text, useApp, useInput, useWindowSize } from 'ink';
 import { useMemo, useState } from 'react';
+import { check } from './commands.ts';
 import { openDiagrams, type Viewer } from './open.ts';
 import { toAscii } from './render.ts';
 import { type Diagram, displayPath } from './scan.ts';
@@ -30,7 +31,10 @@ function asciiPreview(diagram: Diagram): string | null {
   return asciiCache.get(diagram)!;
 }
 
-function Picker({ diagrams, viewer }: { diagrams: Diagram[]; viewer: Viewer }) {
+/** How the picker closed: 'choose' asks the caller to pick folders with fzf and reopen. */
+export type PickerResult = 'quit' | 'choose';
+
+function Picker({ diagrams, viewer, onDone }: { diagrams: Diagram[]; viewer: Viewer; onDone: (r: PickerResult) => void }) {
   const { exit } = useApp();
   const { columns, rows } = useWindowSize();
   const [query, setQuery] = useState('');
@@ -38,28 +42,33 @@ function Picker({ diagrams, viewer }: { diagrams: Diagram[]; viewer: Viewer }) {
   const [marked, setMarked] = useState<Set<Diagram>>(new Set());
   const [panX, setPanX] = useState(0);
   const [showSource, setShowSource] = useState(false);
-  const [status, setStatus] = useState('');
+  const [status, setStatus] = useState<{ text: string; error?: boolean } | null>(null);
 
   const filtered = useMemo(() => filterDiagrams(diagrams, query), [diagrams, query]);
+  const problems = useMemo(() => new Map(check(diagrams).map((p) => [p.diagram, p])), [diagrams]);
   const current = filtered[Math.min(cursor, filtered.length - 1)];
   const bodyHeight = Math.max(3, rows - 4);
-  const listWidth = Math.min(60, Math.floor(columns * 0.4));
-  const previewWidth = columns - listWidth - 3;
+  const listWidth = Math.min(64, Math.floor(columns * 0.38));
+  const previewWidth = columns - listWidth;
 
   const move = (delta: number) => {
     setCursor((c) => Math.max(0, Math.min(filtered.length - 1, c + delta)));
     setPanX(0);
+    setStatus(null);
   };
 
   const open = (targets: Diagram[], how: Viewer) => {
-    if (!targets.length) return;
-    setStatus(`rendering ${targets.length} diagram(s)…`);
+    const broken = targets.filter((d) => problems.has(d));
+    const ok = targets.filter((d) => !problems.has(d));
+    if (broken.length) setStatus({ text: `skipped ${broken.length} broken: ${broken.map((d) => d.title).join(', ')}`, error: true });
+    if (!ok.length) return;
+    setStatus({ text: `rendering ${ok.length}…` });
     openDiagrams(
-      targets.map((d) => d.source),
+      ok.map((d) => d.source),
       how,
     ).then(
-      () => setStatus(`opened ${targets.length} in ${how}`),
-      (e) => setStatus(`error: ${e instanceof Error ? e.message.split('\n')[0] : e}`),
+      () => setStatus({ text: `opened ${ok.length} in ${how}${broken.length ? `, skipped ${broken.length} broken` : ''}` }),
+      (e) => setStatus({ text: e instanceof Error ? e.message.split('\n')[0] : String(e), error: true }),
     );
   };
 
@@ -76,6 +85,10 @@ function Picker({ diagrams, viewer }: { diagrams: Diagram[]; viewer: Viewer }) {
     if (key.leftArrow) return setPanX((x) => Math.max(0, x - PAN_STEP));
     if (key.rightArrow) return setPanX((x) => x + PAN_STEP);
     if (key.ctrl && input === 't') return setShowSource((s) => !s);
+    if (key.ctrl && input === 'f') {
+      onDone('choose');
+      return exit();
+    }
     if (key.tab && current) {
       setMarked((m) => {
         const next = new Set(m);
@@ -104,30 +117,52 @@ function Picker({ diagrams, viewer }: { diagrams: Diagram[]; viewer: Viewer }) {
   const listStart = Math.max(0, Math.min(cursor - Math.floor(bodyHeight / 2), filtered.length - bodyHeight));
   const visible = filtered.slice(listStart, listStart + bodyHeight);
 
-  const ascii = current && !showSource ? asciiPreview(current) : null;
-  const previewLines = (ascii ?? current?.source ?? '').split('\n').slice(0, bodyHeight);
+  const problem = current && problems.get(current);
+  const ascii = current && !showSource && !problem ? asciiPreview(current) : null;
+  const previewBody = ascii ?? current?.source ?? '';
+  const previewLines = previewBody.split('\n').slice(0, bodyHeight - (problem ? 7 : 2));
+
+  const keys: [string, string][] = [
+    ['enter', `open in ${viewer}`],
+    ['ctrl-o', 'browser'],
+    ['tab', 'mark'],
+    ['ctrl-f', 'folders'],
+    ['ctrl-t', showSource ? 'diagram' : 'source'],
+    ['←/→', 'pan'],
+    ['esc', query ? 'clear' : 'quit'],
+  ];
 
   return (
     <Box flexDirection="column" height={rows - 1}>
-      <Box>
-        <Text color="cyan">{'> '}</Text>
+      <Box paddingX={1}>
+        <Text bold color="cyan">
+          trawl{' '}
+        </Text>
+        <Text color="cyan">› </Text>
         <Text>{query}</Text>
-        <Text inverse> </Text>
+        <Text color="cyan">▏</Text>
         <Text dimColor>
           {'  '}
           {filtered.length}/{diagrams.length}
-          {marked.size ? `  (${marked.size} marked)` : ''}
+          {problems.size ? ` · ${problems.size} broken` : ''}
+          {marked.size ? ` · ${marked.size} marked` : ''}
         </Text>
       </Box>
       <Box height={bodyHeight + 2}>
-        <Box flexDirection="column" width={listWidth} borderStyle="round" borderDimColor>
+        <Box flexDirection="column" width={listWidth} borderStyle="round" borderDimColor paddingRight={1}>
           {visible.map((d) => {
             const isCurrent = d === current;
             return (
-              <Text key={`${d.file}:${d.line}`} wrap="truncate" inverse={isCurrent}>
-                <Text color="yellow">{marked.has(d) ? '● ' : '  '}</Text>
-                <Text color="magenta">{(d.type ?? '?').padEnd(10)}</Text>
-                {d.title}
+              <Text key={`${d.file}:${d.line}`} wrap="truncate">
+                <Text color="cyan">{isCurrent ? '▌' : ' '}</Text>
+                {problems.has(d) ? <Text color="red">✗ </Text> : <Text color="yellow">{marked.has(d) ? '● ' : '  '}</Text>}
+                <Text bold={isCurrent} color={isCurrent ? 'cyan' : undefined}>
+                  {d.title}
+                </Text>
+                <Text color="magenta" dimColor={!isCurrent}>
+                  {'  '}
+                  {d.type ?? '?'}
+                </Text>
                 <Text dimColor>
                   {'  '}
                   {displayPath(d.file)}:{d.line}
@@ -136,29 +171,74 @@ function Picker({ diagrams, viewer }: { diagrams: Diagram[]; viewer: Viewer }) {
             );
           })}
         </Box>
-        <Box flexDirection="column" width={previewWidth} borderStyle="round" borderDimColor>
-          {previewLines.map((line, i) => (
-            <Text key={i} wrap="truncate">
-              {line.trimEnd().slice(panX) || ' '}
-            </Text>
-          ))}
+        <Box flexDirection="column" width={previewWidth} borderStyle="round" borderDimColor paddingX={1}>
+          {current ? (
+            <>
+              <Text wrap="truncate">
+                <Text bold>{current.title}</Text>
+                <Text dimColor>
+                  {'  '}
+                  {current.type ?? '?'} · {displayPath(current.file)}:{current.line}
+                  {!problem && !showSource && !ascii ? ' · no text preview for this type, enter to view' : ''}
+                </Text>
+              </Text>
+              {problem ? (
+                <Box flexDirection="column" marginTop={1}>
+                  <Text color="red" bold>
+                    ✗ syntax error at line {problem.line}
+                  </Text>
+                  {problem.message
+                    .split('\n')
+                    .slice(0, 3)
+                    .map((l, i) => (
+                      <Text key={i} color="red" dimColor={i === 2} wrap="truncate">
+                        {l}
+                      </Text>
+                    ))}
+                </Box>
+              ) : null}
+              <Box flexDirection="column" marginTop={1}>
+                {previewLines.map((line, i) => (
+                  <Text key={i} wrap="truncate" dimColor={showSource || !!problem || !ascii}>
+                    {line.trimEnd().slice(panX) || ' '}
+                  </Text>
+                ))}
+              </Box>
+            </>
+          ) : (
+            <Text dimColor>no diagram matches “{query}”</Text>
+          )}
         </Box>
       </Box>
-      <Text dimColor wrap="truncate">
-        {status ? <Text color="green">{status} · </Text> : null}
-        enter: open in {viewer} · ctrl-o: browser · tab: mark · ←/→: pan · ctrl-t: {showSource ? 'diagram' : 'source'}{' '}
-        · esc: clear/quit
-        {current && !showSource && !ascii ? ' · (no text preview for this type)' : ''}
+      <Text wrap="truncate">
+        {' '}
+        {status ? (
+          <Text color={status.error ? 'red' : 'green'}>
+            {status.text}
+            {'   '}
+          </Text>
+        ) : null}
+        {keys.map(([k, label], i) => (
+          <Text key={k}>
+            {i ? <Text dimColor> · </Text> : null}
+            <Text>{k}</Text>
+            <Text dimColor> {label}</Text>
+          </Text>
+        ))}
       </Text>
     </Box>
   );
 }
 
-export async function runPicker(diagrams: Diagram[], viewer: Viewer): Promise<void> {
+export async function runPicker(diagrams: Diagram[], viewer: Viewer): Promise<PickerResult> {
+  let result: PickerResult = 'quit';
   // Alternate screen, like vim/less: often summoned from a keybind, so restore the terminal on exit.
   // Ink switches screens without homing the cursor, so a keybind fired mid-prompt would draw the first
   // row at the prompt's column: enter the alternate screen and home the cursor ourselves first.
   process.stdout.write('\x1b[?1049h\x1b[H');
-  const app = render(<Picker diagrams={diagrams} viewer={viewer} />, { alternateScreen: true });
+  const app = render(<Picker diagrams={diagrams} viewer={viewer} onDone={(r) => (result = r)} />, {
+    alternateScreen: true,
+  });
   await app.waitUntilExit();
+  return result;
 }

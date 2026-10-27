@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Installs trawl:
 #   1. builds the binary -> ~/.local/bin/trawl
-#   2. asks which folders `trawl --all` / `trawl --choose` scan -> ~/.config/trawl/config.json
-#   3. shell keybinds (zsh/bash): ctrl+alt+d scans everything, ctrl+alt+f picks folders first
+#   2. asks which folders trawl scans (`trawl roots pick`) -> ~/.config/trawl/config.json
+#   3. a shell keybind (zsh/bash), alt+m by default, that opens the picker
 #   4. the Claude Code skill -> ~/.claude/skills/trawl
 # Re-runnable: each step replaces what a previous run installed.
 #
@@ -94,110 +94,71 @@ esac
 
 # ── 2. Folders ───────────────────────────────────────────────────────────
 section "Folders to scan"
+TRAWL="$BIN_DEST/trawl"
 
-# choose_dirs: prints the chosen folders, one per line (empty when none were picked).
-choose_dirs() {
+pick_roots=1
+if [[ -n "$("$TRAWL" roots 2>/dev/null)" ]]; then
+  dim "Configured:"
+  "$TRAWL" roots | sed 's/^/  /'
+  ask_yn "Change them?" n
+  [[ "$REPLY_YN" == y ]] || pick_roots=0
+fi
+
+if [[ "$pick_roots" -eq 1 && "$ASSUME_YES" -eq 0 ]]; then
+  dim "\`trawl\` scans these folders. Change them any time with \`trawl roots pick\` or \`trawl roots add DIR\`."
   if command -v fzf >/dev/null 2>&1; then
-    # Depth-bounded: an unbounded walk of $HOME takes seconds on a big disk.
-    find "$HOME" -maxdepth 3 -type d -not -path '*/.*' -not -name node_modules 2>/dev/null \
-      | sed "s|^$HOME|~|" \
-      | fzf --multi --bind 'tab:toggle+down' --prompt 'folders> ' \
-          --header 'Folders trawl scans (tab: select several, enter: confirm)' </dev/tty || true
+    "$TRAWL" roots pick >/dev/null || true
   else
-    dim "fzf not found: type one folder per line, empty line to finish." >&2
-    local reply
-    while read -r -p '> ' reply && [[ -n "$reply" ]]; do printf '%s\n' "$reply"; done
+    ask_value "Folder to scan (fzf not found; add more later with \`trawl roots add DIR\`)" "$HOME/code"
+    "$TRAWL" roots add "${REPLY_VALUE/#\~/$HOME}" >/dev/null || true
   fi
-}
-
-# json_roots <dir...>: the config file's JSON, paths kept ~-relative so it reads well and travels.
-json_roots() {
-  local out="" d
-  for d in "$@"; do
-    [[ "$d" == "$HOME"/* || "$d" == "$HOME" ]] && d="~${d#"$HOME"}"
-    d="${d//\\/\\\\}"; d="${d//\"/\\\"}"
-    out="${out:+$out, }\"$d\""
-  done
-  printf '{\n  "roots": [%s]\n}\n' "$out"
-}
-
-configure_roots=1
-if [[ -f "$CONF" ]]; then
-  dim "Current $CONF:"
-  dim "$(cat "$CONF")"
-  ask_yn "Change the folders?" n
-  [[ "$REPLY_YN" == y ]] || configure_roots=0
 fi
 
-if [[ "$configure_roots" -eq 1 ]]; then
-  roots=()
-  if [[ "$ASSUME_YES" -eq 0 ]]; then
-    dim "\`trawl --all\` scans these folders; \`trawl --choose\` lets you pick folders inside them."
-    while IFS= read -r d; do [[ -n "$d" ]] && roots+=("${d/#\~/$HOME}"); done < <(choose_dirs)
-  fi
-  if [[ ${#roots[@]} -eq 0 ]]; then
-    roots=("$HOME/code")
-    [[ -d "$HOME/code" ]] || roots=("$HOME")
-    note "No folders picked; using ${roots[0]}."
-  fi
-  mkdir -p "$CONF_DIR"
-  json_roots "${roots[@]}" > "$CONF"
-  ok "Wrote $CONF"
-  dim "$(cat "$CONF")"
+if [[ -z "$("$TRAWL" roots 2>/dev/null)" ]]; then
+  default_root="$HOME/code"
+  [[ -d "$default_root" ]] || default_root="$HOME"
+  "$TRAWL" roots add "$default_root" >/dev/null 2>&1
+  note "No folders picked; using $default_root (change with: trawl roots pick)."
 fi
+ok "Scanning:"
+"$TRAWL" roots | sed 's/^/  /'
 
-# ── 3. Keybinds ──────────────────────────────────────────────────────────
-section "Keybinds"
-
-# ask_key <what> <default>: sets KEY to a letter for ctrl+alt+<letter>.
-ask_key() {
-  while true; do
-    ask_value "ctrl+alt+? to $1" "$2"
-    case "$REPLY_VALUE" in
-      # ctrl+h/i/j/m are backspace, tab, newline and enter: binding them breaks typing.
-      [hijm]) note "ctrl+alt+$REPLY_VALUE collides with backspace/tab/enter, pick another letter." ;;
-      [a-z])  KEY="$REPLY_VALUE"; return ;;
-      *)      note "One lowercase letter, please." ;;
-    esac
-  done
-}
+# ── 3. Keybind ───────────────────────────────────────────────────────────
+section "Keybind"
 
 if [[ "$KEYBIND" -eq 1 ]]; then
-  dim "Two shell keybinds that open trawl from any prompt, in any terminal, inside tmux/herdr too."
-  ask_yn "Install them?" y
+  dim "A shell keybind that opens trawl from any prompt, in any terminal, inside tmux/herdr too."
+  ask_yn "Install it?" y
   [[ "$REPLY_YN" == y ]] || KEYBIND=0
 fi
 
 if [[ "$KEYBIND" -eq 1 ]]; then
-  ask_key "scan all configured folders" d; ALL_KEY="$KEY"
-  ask_key "choose folders, then scan" f; CHOOSE_KEY="$KEY"
-  if [[ "$ALL_KEY" == "$CHOOSE_KEY" ]]; then
-    note "Both keybinds were ctrl+alt+$ALL_KEY; using defaults d and f instead."
-    ALL_KEY=d CHOOSE_KEY=f
-  fi
-  ALL_UP="$(tr '[:lower:]' '[:upper:]' <<<"$ALL_KEY")"
-  CHOOSE_UP="$(tr '[:lower:]' '[:upper:]' <<<"$CHOOSE_KEY")"
+  while true; do
+    ask_value "alt+? opens trawl" m
+    case "$REPLY_VALUE" in
+      # Readline/zle word editing (alt+b/d/f) and fzf's cd widget (alt+c) live on these.
+      [bcdf]) note "alt+$REPLY_VALUE is taken by shell word editing or fzf, pick another letter." ;;
+      [a-z])  KEY="$REPLY_VALUE"; break ;;
+      *)      note "One lowercase letter, please." ;;
+    esac
+  done
   mkdir -p "$CONF_DIR"
 
-  # ctrl+alt+<letter> reaches the shell as ESC followed by ctrl+<letter>.
+  # alt+<letter> reaches the shell as ESC followed by the letter.
   cat > "$CONF_DIR/keybinds.zsh" <<ZSH
-# Generated by trawl install.sh; re-run it to change the keys.
-_trawl_all() { trawl --all </dev/tty; zle reset-prompt; }
-_trawl_choose() { trawl --choose </dev/tty; zle reset-prompt; }
-zle -N _trawl_all
-zle -N _trawl_choose
+# Generated by trawl install.sh; re-run it to change the key.
+_trawl() { trawl </dev/tty; zle reset-prompt; }
+zle -N _trawl
 for _trawl_km in emacs viins vicmd; do
-  bindkey -M \$_trawl_km '^[^$ALL_UP' _trawl_all        # ctrl+alt+$ALL_KEY
-  bindkey -M \$_trawl_km '^[^$CHOOSE_UP' _trawl_choose  # ctrl+alt+$CHOOSE_KEY
+  bindkey -M \$_trawl_km '^[$KEY' _trawl   # alt+$KEY
 done
 unset _trawl_km
 ZSH
 
   cat > "$CONF_DIR/keybinds.bash" <<BASH
-# Generated by trawl install.sh; re-run it to change the keys.
+# Generated by trawl install.sh; re-run it to change the key.
 [[ \$- == *i* ]] || return 0
-bind -x '"\\e\\C-$ALL_KEY": trawl --all </dev/tty'        # ctrl+alt+$ALL_KEY
-bind -x '"\\e\\C-$CHOOSE_KEY": trawl --choose </dev/tty'  # ctrl+alt+$CHOOSE_KEY
+bind -x '"\\e$KEY": trawl </dev/tty'   # alt+$KEY
 BASH
 
   rcs=()
@@ -207,8 +168,8 @@ BASH
     replace_fence "$HOME/.${sh}rc" "[ -f \"$CONF_DIR/keybinds.$sh\" ] && . \"$CONF_DIR/keybinds.$sh\""
     ok "~/.${sh}rc sources $CONF_DIR/keybinds.$sh"
   done
-  ok "ctrl+alt+$ALL_KEY: scan all folders · ctrl+alt+$CHOOSE_KEY: choose folders"
-  [[ "$(uname)" == Darwin ]] && dim "macOS: set your terminal's Option key to act as Alt/Meta (e.g. iTerm2 'Esc+') for these to fire."
+  ok "alt+$KEY opens trawl (ctrl+f inside it narrows to chosen folders)"
+  [[ "$(uname)" == Darwin ]] && dim "macOS: set your terminal's Option key to act as Alt/Meta (e.g. iTerm2 'Esc+') for it to fire."
 fi
 
 # ── 4. Claude Code skill ─────────────────────────────────────────────────
@@ -226,4 +187,4 @@ elif [[ "$SKILL" -eq 1 ]]; then
 fi
 
 section "Done"
-dim "Restart your shell (or source your rc file), then press the keybind or run: trawl --all"
+dim "Restart your shell (or source your rc file), then press alt+${KEY:-m} or run: trawl"

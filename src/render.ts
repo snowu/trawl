@@ -74,5 +74,11 @@ export async function renderToCache(source: string, format: 'svg' | 'png'): Prom
 /** Terminal (box-drawing) rendering; throws for diagram types beautiful-mermaid doesn't support. */
 export function toAscii(source: string): string {
   // beautiful-mermaid rejects YAML frontmatter (---\ntitle: ...\n---).
-  return renderMermaidASCII(source.replace(/^\s*---\n[\s\S]*?\n---\n/, ''));
+  // No ANSI: its themes assume a light background (labels vanish on dark ones), and escape codes break
+  // the picker's truncation and panning. Plain text takes the terminal's own colors.
+  return renderMermaidASCII(source.replace(/^\s*---\n[\s\S]*?\n---\n/, ''), {
+    colorMode: 'none',
+    paddingX: 3,
+    paddingY: 2,
+  });
 }

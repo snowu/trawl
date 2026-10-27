@@ -46,5 +46,5 @@ Only when the user wants image files (e.g. to attach to a PR or Notion page).
 
 ## Don't
 
-- Don't run bare `trawl`, `trawl --all` or `trawl --choose`: they open an interactive picker meant for humans and will
-  hang without a terminal.
+- Don't run bare `trawl` or `trawl PATH` (no subcommand): it opens an interactive picker meant for humans and will
+  hang without a terminal. Same for `trawl roots pick`.

@@ -2,9 +2,9 @@ import { describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { listFolders } from '../src/choose.ts';
+import { listFolders, parseFzfPick } from '../src/choose.ts';
 import { diagramAt } from '../src/commands.ts';
-import { loadConfig } from '../src/config.ts';
+import { loadConfig, saveConfig } from '../src/config.ts';
 import { extract } from '../src/scan.ts';
 
 const tmp = () => mkdtemp(join(tmpdir(), 'trawl-'));
@@ -40,6 +40,41 @@ describe('diagramAt', () => {
 
   test('nothing above the first fence', () => {
     expect(diagramAt(diagrams, 1)).toBeUndefined();
+  });
+});
+
+describe('saveConfig', () => {
+  test('writes roots ~-relative, deduplicated, and round-trips', async () => {
+    const path = join(await tmp(), 'nested', 'config.json');
+    const code = join(homedir(), 'code');
+    await saveConfig({ roots: [code, '/abs', code] }, path);
+    expect(await Bun.file(path).json()).toEqual({ roots: ['~/code', '/abs'] });
+    expect(await loadConfig(path)).toEqual({ roots: [code, '/abs'] });
+  });
+});
+
+describe('parseFzfPick', () => {
+  const dir = tmpdir();
+
+  test('selected entries win, query is just the filter', () => {
+    expect(parseFzfPick('code\n~/code/a\n~/code/b\n')).toEqual(['~/code/a', '~/code/b']);
+  });
+
+  test('a typed existing folder path wins over a single fuzzy match', () => {
+    expect(parseFzfPick(`${dir}\n~/code/some-fuzzy-hit\n`)).toEqual([dir]);
+  });
+
+  test('but not over several tab-selected entries', () => {
+    expect(parseFzfPick(`${dir}\n~/a\n~/b\n`)).toEqual(['~/a', '~/b']);
+  });
+
+  test('typed text that is not a folder path only filters', () => {
+    expect(parseFzfPick('code\n~/code\n')).toEqual(['~/code']);
+    expect(parseFzfPick('/definitely/not/here\n')).toEqual([]);
+  });
+
+  test('cancel (empty output) picks nothing', () => {
+    expect(parseFzfPick('')).toEqual([]);
   });
 });
 

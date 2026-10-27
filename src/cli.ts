@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
-import { homedir } from 'node:os';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { chooseFolders } from './choose.ts';
+import { chooseFolders, pickRoots } from './choose.ts';
 import { check, diagramAt, formatProblem, renderAll } from './commands.ts';
-import { CONFIG_PATH, loadConfig } from './config.ts';
+import { CONFIG_PATH, expandHome, loadConfig, saveConfig } from './config.ts';
 import { defaultViewer, openDiagrams, type Viewer } from './open.ts';
 import { type Diagram, displayPath, scan, tildePath } from './scan.ts';
 import pkg from '../package.json' with { type: 'json' };
@@ -11,17 +12,23 @@ import pkg from '../package.json' with { type: 'json' };
 const HELP = `trawl ${pkg.version}: find, preview and open Mermaid diagrams in markdown files
 
 Usage:
-  trawl [paths...]                 interactive picker (default path: .)
+  trawl                            picker over your configured folders (see \`trawl roots\`), else the current one
+  trawl PATH...                    picker over these folders/files instead (\`trawl .\` for the current folder)
+                                   ctrl+f in the picker narrows to chosen subfolders
   trawl open FILE[:LINE]...        open diagrams without the picker (LINE picks the one at that line)
   trawl list [paths...]            print every diagram as path:line  type  title
   trawl check [paths...]           report diagrams with syntax errors (exit 1 if any)
   trawl render [paths...] -o DIR   write every diagram to DIR as PNG (or --format svg)
 
+  trawl roots                      show the configured folders
+  trawl roots pick                 choose them with fzf (anything under ~, or type a path)
+  trawl roots add|remove DIR...    add or remove folders
+
 Paths can be directories (scanned recursively for .md and .mmd) or files.
+Configured folders live in ${tildePath(CONFIG_PATH)}.
 
 Options:
-  -a, --all            scan every folder listed in ${tildePath(CONFIG_PATH)} instead of paths
-  -c, --choose         pick folders to scan with fzf (from the configured folders, else ~)
+  -a, --all            scan the configured folders even when paths are given (they are ignored)
   -b, --browser        open SVGs in the browser instead of PNGs in feh
   -o, --out DIR        output directory for render (default: ./trawl-out)
   -f, --format FORMAT  png or svg, for render (default: png)
@@ -29,15 +36,53 @@ Options:
   -v, --version        show the version
 `;
 
-const COMMANDS = new Set(['open', 'list', 'check', 'render']);
+const COMMANDS = new Set(['open', 'list', 'check', 'render', 'roots']);
 
-/** Folders to scan: the configured roots (--all), an fzf selection (--choose), or the given paths. */
-async function scanPaths(all: boolean | undefined, choose: boolean | undefined, positionals: string[]): Promise<string[]> {
-  if (!all && !choose) return positionals.length ? positionals : ['.'];
+/** Folders to scan, as absolute paths: the given paths, else the configured roots, else the current folder. */
+async function scanPaths(all: boolean | undefined, positionals: string[]): Promise<string[]> {
+  if (positionals.length && !all) return positionals.map((p) => resolve(p));
   const { roots } = await loadConfig();
-  if (choose) return chooseFolders(roots.length ? roots : [homedir()]);
-  if (!roots.length) throw new Error(`--all needs folders: add {"roots": ["~/code"]} to ${CONFIG_PATH}`);
-  return roots;
+  if (roots.length) return roots;
+  if (all) throw new Error('--all needs folders: run `trawl roots pick` or `trawl roots add DIR`');
+  return [resolve('.')];
+}
+
+/** `trawl roots [pick | add DIR... | remove DIR...]` */
+async function rootsCommand([action, ...dirs]: string[]): Promise<number> {
+  const { roots } = await loadConfig();
+  let next: string[];
+  switch (action) {
+    case undefined:
+      if (!roots.length) console.error('No folders configured: run `trawl roots pick` or `trawl roots add DIR`.');
+      roots.forEach((r) => console.log(tildePath(r)));
+      return 0;
+    case 'pick':
+      next = await pickRoots();
+      if (!next.length) return 0; // cancelled: keep what's there
+      break;
+    case 'add': {
+      const added = dirs.map(expandHome);
+      const missing = added.filter((d) => !existsSync(d));
+      if (missing.length) {
+        console.error(`trawl: not a folder: ${missing.join(', ')}`);
+        return 1;
+      }
+      next = [...roots, ...added];
+      break;
+    }
+    case 'remove': {
+      const removed = new Set(dirs.map(expandHome));
+      next = roots.filter((r) => !removed.has(r));
+      break;
+    }
+    default:
+      console.error(`trawl: unknown roots action "${action}" (expected pick, add or remove)`);
+      return 2;
+  }
+  await saveConfig({ roots: next });
+  console.error(`Saved ${tildePath(CONFIG_PATH)}:`);
+  next.forEach((r) => console.log(tildePath(r)));
+  return 0;
 }
 
 /** `trawl open a.md:40 b.mmd`: every diagram in each file, or just the one at LINE. */
@@ -69,7 +114,6 @@ async function main(): Promise<number> {
     allowPositionals: true,
     options: {
       all: { type: 'boolean', short: 'a' },
-      choose: { type: 'boolean', short: 'c' },
       browser: { type: 'boolean', short: 'b' },
       out: { type: 'string', short: 'o', default: 'trawl-out' },
       format: { type: 'string', short: 'f', default: 'png' },
@@ -85,9 +129,9 @@ async function main(): Promise<number> {
   const command = COMMANDS.has(positionals[0]) ? positionals.shift()! : 'pick';
   const viewer: Viewer = values.browser ? 'browser' : defaultViewer();
   if (command === 'open') return openCommand(positionals, viewer);
+  if (command === 'roots') return rootsCommand(positionals);
 
-  const paths = await scanPaths(values.all, values.choose, positionals);
-  if (!paths.length) return 0; // --choose cancelled
+  const paths = await scanPaths(values.all, positionals);
   const diagrams = await scan(paths);
 
   switch (command) {
@@ -118,13 +162,18 @@ async function main(): Promise<number> {
     console.error('trawl: the picker needs a terminal; use `trawl list` in pipes');
     return 2;
   }
-  if (!diagrams.length) {
-    console.error('trawl: no mermaid diagrams found');
-    return 1;
-  }
   const { runPicker } = await import('./ui.tsx');
-  await runPicker(diagrams, viewer);
-  return 0;
+  let current = diagrams;
+  // ctrl+f in the picker closes it to choose folders (inside the scanned paths) with fzf; then reopen on those.
+  while (true) {
+    if (!current.length) {
+      console.error('trawl: no mermaid diagrams found');
+      return 1;
+    }
+    if ((await runPicker(current, viewer)) !== 'choose') return 0;
+    const chosen = await chooseFolders(paths);
+    if (chosen.length) current = await scan(chosen);
+  }
 }
 
 main().then(
