@@ -1,9 +1,10 @@
 import { Box, render, Text, useApp, useInput, useWindowSize } from 'ink';
 import { basename, dirname, relative } from 'node:path';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { check } from './commands.ts';
 import { openDiagrams, type Viewer } from './open.ts';
-import { toAscii } from './render.ts';
+import { clearImage, hideImage, imagesSupported, placeImage, transmitImage } from './kitty.ts';
+import { renderToCache, toAscii } from './render.ts';
 import { type Diagram, displayPath, tildePath } from './scan.ts';
 
 const PAN_STEP = 8;
@@ -19,6 +20,9 @@ export function filterDiagrams(diagrams: Diagram[], query: string): Diagram[] {
 }
 
 const asciiCache = new Map<Diagram, string | null>();
+
+/** Real rendered PNGs in the preview pane (Ghostty, kitty, WezTerm); colored ASCII elsewhere. */
+const IMAGES = imagesSupported();
 
 type Run = { text: string; kind: 'line' | 'arrow' | 'text' };
 // Box drawing, the corner glyphs used for some node shapes, and diamonds; then arrowheads.
@@ -189,7 +193,40 @@ function Picker({ diagrams, roots, viewer, onDone }: PickerProps) {
   const visible = rowList.slice(listStart, listStart + bodyHeight);
 
   const problem = current && problems.get(current);
-  const ascii = current && !showSource && !problem ? asciiPreview(current) : null;
+  const [imageError, setImageError] = useState<Diagram | null>(null);
+  // A diagram whose PNG failed to render falls back to the ASCII preview.
+  const imageMode = IMAGES && !!current && !problem && !showSource && imageError !== current;
+  const ascii = current && !showSource && !problem && !imageMode ? asciiPreview(current) : null;
+
+  // Image preview: render the PNG (cached) once the cursor rests, upload it, then place it after every redraw.
+  const [image, setImage] = useState<{ diagram: Diagram; png: Uint8Array } | null>(null);
+  useEffect(() => {
+    if (!imageMode || !current) return;
+    let live = true;
+    const timer = setTimeout(async () => {
+      try {
+        const png = await Bun.file(await renderToCache(current.source, 'png')).bytes();
+        if (!live) return;
+        process.stdout.write(transmitImage(png));
+        setImage({ diagram: current, png });
+      } catch {
+        if (live) setImageError(current);
+      }
+    }, 80);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [current, imageMode]);
+  const shown = imageMode && image?.diagram === current ? image : null;
+  // Pane interior below the title line and its margin; the last two rows are kept for the hint line and a gap.
+  const imageBox = { row: 5, col: listWidth + 3, cols: previewWidth - 4, rows: bodyHeight - 4 };
+  useEffect(() => {
+    if (!IMAGES) return;
+    // After Ink has written this frame: text redraws don't remove images, so place (or hide) explicitly.
+    const timer = setTimeout(() => process.stdout.write(shown ? placeImage(shown.png, imageBox) : hideImage()), 30);
+    return () => clearTimeout(timer);
+  });
   const previewBody = ascii ?? current?.source ?? '';
   // Cut lines at the pane edge ourselves (no "…" column) and say when there's more to pan or scroll to.
   const artWidth = previewWidth - 4;
@@ -205,7 +242,7 @@ function Picker({ diagrams, roots, viewer, onDone }: PickerProps) {
     ['ctrl-f', 'subfolders'],
     ['ctrl-a', 'all folders'],
     ['ctrl-t', showSource ? 'diagram' : 'source'],
-    ['←/→', 'pan'],
+    ...(imageMode ? [] : [['←/→', 'pan'] as [string, string]]),
     ['esc', query ? 'clear' : 'quit'],
   ];
 
@@ -264,7 +301,7 @@ function Picker({ diagrams, roots, viewer, onDone }: PickerProps) {
                 <Text dimColor>
                   {'  '}
                   {current.type ?? '?'} · {displayPath(current.file)}:{current.line}
-                  {!problem && !showSource && !ascii ? ' · no text preview for this type, enter to view' : ''}
+                  {!problem && !showSource && !imageMode && !ascii ? ' · no text preview for this type, enter to view' : ''}
                 </Text>
               </Text>
               {problem ? (
@@ -282,8 +319,15 @@ function Picker({ diagrams, roots, viewer, onDone }: PickerProps) {
                     ))}
                 </Box>
               ) : null}
-              <Box flexDirection="column" marginTop={1}>
-                {previewLines.map((line, i) =>
+              {imageMode ? (
+                <Box flexDirection="column" marginTop={1} height={bodyHeight - 2} justifyContent="flex-end">
+                  <Text dimColor>
+                    {shown ? 'enter: open full size' : 'rendering…'}
+                  </Text>
+                </Box>
+              ) : null}
+              <Box flexDirection="column" marginTop={imageMode ? 0 : 1}>
+                {!imageMode && previewLines.map((line, i) =>
                   ascii ? (
                     <Text key={i} wrap="truncate">
                       {colorRuns(line).map((run, j) =>
@@ -303,7 +347,7 @@ function Picker({ diagrams, roots, viewer, onDone }: PickerProps) {
                     </Text>
                   ),
                 )}
-                {hiddenRight || hiddenBelow > 0 || panX > 0 ? (
+                {!imageMode && (hiddenRight || hiddenBelow > 0 || panX > 0) ? (
                   <Text dimColor>
                     {[
                       panX > 0 && '← more',
@@ -353,5 +397,6 @@ export async function runPicker(diagrams: Diagram[], roots: string[], viewer: Vi
     alternateScreen: true,
   });
   await app.waitUntilExit();
+  if (IMAGES) process.stdout.write(clearImage());
   return result;
 }

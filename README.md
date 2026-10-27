@@ -8,8 +8,10 @@ Find every Mermaid diagram in a set of folders, preview it in the terminal, and 
 - Renders without a browser or Chromium: [pele](https://github.com/obsidianmd/pele) draws the SVG,
   [resvg](https://github.com/linebender/resvg) rasterizes it with a bundled Inter font, so PNGs look the same on every
   machine.
-- Previews diagrams as box-drawing art in the terminal ([beautiful-mermaid](https://github.com/lukilabs/beautiful-mermaid);
-  flowchart, sequence, state, class, ER and XY charts; other types show their source).
+- Previews the real rendered diagram inside the picker in terminals that support inline images (Ghostty, kitty,
+  WezTerm). Elsewhere (Alacritty, tmux, ...) it falls back to colored box-drawing art
+  ([beautiful-mermaid](https://github.com/lukilabs/beautiful-mermaid): flowchart, sequence, state, class, ER and XY
+  charts; other types show their source). `TRAWL_IMAGES=0` or `=1` overrides the detection.
 - `trawl check` doubles as a Mermaid linter for CI.
 
 ## Install
