@@ -2,3 +2,6 @@ node_modules/
 bin/
 # Overrides a global `examples/` ignore some setups have: the mock diagrams are part of the repo.
 !examples/
+
+# Demo recordings: intermediates (raw takes, stills, frames); the finished videos live in demo/.
+demo/build/

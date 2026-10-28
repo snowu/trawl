@@ -1,0 +1,32 @@
+stateDiagram-v2
+  [*] --> Draft
+  Draft --> Placed: checkout
+  state Placed {
+    direction LR
+    [*] --> Reserving
+    Reserving --> Charging: stock held
+    Charging --> [*]: paid
+  }
+  Placed --> check
+  state check <<choice>>
+  check --> Fulfilment: payment ok
+  check --> Cancelled: declined / sold out
+  state Fulfilment {
+    direction LR
+    [*] --> Picking
+    Picking --> Packed
+    Packed --> Shipped
+  }
+  Fulfilment --> Delivered: carrier scan
+  Delivered --> Returned: within 30 days
+  Returned --> Refunded
+  Delivered --> [*]
+  Refunded --> [*]
+  Cancelled --> [*]
+
+  classDef good fill:#9ece6a,stroke:#4f7a2f,color:#1a1b26
+  classDef bad fill:#f7768e,stroke:#a63d52,color:#fff
+  classDef money fill:#e0af68,stroke:#8c6a2f,color:#1a1b26
+  class Delivered good
+  class Cancelled bad
+  class Returned,Refunded money
