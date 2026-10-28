@@ -475,6 +475,9 @@ export async function runPicker(diagrams: Diagram[], roots: string[], viewer: Vi
     alternateScreen: true,
   });
   await app.waitUntilExit();
+  // The mouse listener left stdin flowing; pause it so fzf (ctrl+f) gets every key instead of racing us for
+  // them: an arrow's leading ESC alone reached fzf and cancelled it.
+  process.stdin.pause();
   // Restore the terminal even if the effect cleanups did not get to run.
   process.stdout.write(MOUSE_OFF);
   if (images) process.stdout.write(clearImage());
