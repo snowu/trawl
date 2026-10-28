@@ -5,3 +5,5 @@ bin/
 
 # Demo recordings: intermediates (raw takes, stills, frames); the finished videos live in demo/.
 demo/build/
+# Vibe videos are rendered locally (demo/vibe/), not tracked: only the TUI demo and its GIF live in the repo.
+demo/trawl-vibe*.mp4

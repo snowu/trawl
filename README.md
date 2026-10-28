@@ -31,7 +31,9 @@ The installer, re-runnable at any time:
 3. adds a shell keybind to `~/.zshrc` / `~/.bashrc`: **alt+m** (letter configurable) opens the picker on the repo
    you're in,
 4. installs a [Claude Code](https://claude.com/claude-code) skill (`~/.claude/skills/trawl`) so agents run
-   `trawl check` on diagrams they write and `trawl open` to show them to you.
+   `trawl check` on diagrams they write and `trawl open` to show them to you. With Figma's MCP connected
+   (`claude plugin install figma@claude-plugins-official`, then `/mcp` → figma → Authenticate) they can also publish
+   diagrams as editable FigJam boards and pull boards back into your markdown as Mermaid; just ask.
 
 `./install.sh --yes` takes every default without asking; `--no-keybind` and `--no-skill` skip those steps.
 The keybind works in any terminal and inside tmux/herdr, wherever you are at a zsh or bash prompt (on macOS, set the

@@ -3,7 +3,7 @@
 | File | What |
 | --- | --- |
 | `trawl-demo.mp4` / `.gif` | The real TUI in Ghostty: check, alt+m picker, browse, filter, zoom/pan, source, render. |
-| `trawl-vibe.mp4` | Motion graphics, no terminal: the net, the renders, check / render / open, alt+m. |
+| `trawl-vibe.mp4` | Motion graphics, no terminal (not in the repo: render it with the steps below). |
 
 `shop/` is the fictional project both videos show (17 diagrams across most Mermaid types).
 Everything intermediate lands in `build/` (gitignored).
