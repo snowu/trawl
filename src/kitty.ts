@@ -60,8 +60,8 @@ export async function queryCellAspect(timeoutMs = 200): Promise<void> {
     stdin.on('data', onData);
     process.stdout.write('\x1b[16t');
   });
+  // Leave stdin flowing: pausing it lets Bun end the process once Ink takes over (the picker vanished on its own).
   stdin.setRawMode(false);
-  stdin.pause();
   const m = /\x1b\[6;(\d+);(\d+)t/.exec(reply);
   if (m && Number(m[2]) > 0) cellAspect = Number(m[1]) / Number(m[2]);
 }
