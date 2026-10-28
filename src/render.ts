@@ -56,7 +56,14 @@ export async function svgToPng(svg: string): Promise<Uint8Array> {
     fitTo: { mode: 'zoom', value: 2 },
     font: { fontBuffers, defaultFontFamily: FONT, sansSerifFamily: FONT, loadSystemFonts: false },
   });
-  return resvg.render().asPng();
+  // wasm memory isn't garbage collected: without free() every render leaks for the life of the picker.
+  const image = resvg.render();
+  try {
+    return image.asPng();
+  } finally {
+    image.free();
+    resvg.free();
+  }
 }
 
 /** Writes the diagram's SVG or PNG to the cache (keyed by source hash) and returns its path. */
