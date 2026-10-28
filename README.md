@@ -105,6 +105,7 @@ Picker keys:
 | shift ←/→ | pan a wide text preview |
 | mouse | click a row to select it, wheel over the list to move; over an image: wheel zooms, drag pans, right-click resets |
 | ctrl-t | toggle preview between diagram and source |
+| ctrl-y | copy the mermaid source (marked: all of them, as fenced blocks) |
 | esc | clear the filter, or quit |
 
 The list is grouped by folder. Broken diagrams are marked ✗; selecting one shows the syntax error with its line

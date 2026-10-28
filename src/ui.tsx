@@ -1,6 +1,7 @@
 import { Box, render, Text, useApp, useInput, useWindowSize } from 'ink';
 import { basename, dirname, relative } from 'node:path';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { copyText } from './clipboard.ts';
 import { check } from './commands.ts';
 import { openDiagrams, type Viewer } from './open.ts';
 import {
@@ -164,7 +165,19 @@ export function Picker({ diagrams, roots, viewer, images, onDone }: PickerProps)
     );
   };
 
+  /** One diagram: its bare source (pastes into mermaid.live, Figma's Mermaid import, ...). Several: fenced blocks. */
+  const copy = (targets: Diagram[]) => {
+    if (!targets.length) return;
+    const text =
+      targets.length === 1 ? targets[0].source : targets.map((d) => `\`\`\`mermaid\n${d.source}\n\`\`\``).join('\n\n');
+    copyText(`${text}\n`).then(
+      (how) => setStatus({ text: `copied ${targets.length === 1 ? targets[0].title : `${targets.length} diagrams`} via ${how}` }),
+      (e) => setStatus({ text: e instanceof Error ? e.message.split('\n')[0] : String(e), error: true }),
+    );
+  };
+
   useInput((input, key) => {
+    if (key.ctrl && input === 'y') return copy(marked.size ? [...marked] : current ? [current] : []);
     if (key.escape && !query) return exit();
     if (key.escape) {
       setQuery('');
@@ -317,6 +330,7 @@ export function Picker({ diagrams, roots, viewer, images, onDone }: PickerProps)
     ['ctrl-f', 'subfolders'],
     ['ctrl-a', 'all folders'],
     ['ctrl-t', showSource ? 'diagram' : 'source'],
+    ['ctrl-y', 'copy code'],
     ['←/→', 'folders'],
     ...(imageMode ? [['wheel/drag', 'zoom/pan'] as [string, string]] : [['shift ←/→', 'pan'] as [string, string]]),
     ['esc', query ? 'clear' : 'quit'],
