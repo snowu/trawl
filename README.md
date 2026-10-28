@@ -3,6 +3,8 @@
 Find every Mermaid diagram in a set of folders, preview it in the terminal, and open it as a crisp PNG in
 [feh](https://feh.finalrewind.org/) (or as an SVG in your browser).
 
+![trawl: lint, open the picker with alt+m, browse real rendered previews, filter, zoom, view source, export](demo/trawl-demo.gif)
+
 - Scans `.md` files for ` ```mermaid ` / `~~~mermaid` blocks and whole `.mmd` files, labelling each diagram with the
   nearest markdown heading.
 - Renders without a browser or Chromium: [pele](https://github.com/obsidianmd/pele) draws the SVG,
