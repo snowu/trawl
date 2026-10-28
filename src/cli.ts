@@ -99,7 +99,7 @@ async function rootsCommand([action, ...dirs]: string[]): Promise<number> {
       return 2;
   }
   await saveConfig({ roots: next });
-  console.error(`Saved ${tildePath(CONFIG_PATH)}:`);
+  process.stderr.write(`Saved ${tildePath(CONFIG_PATH)}:\n`);
   next.forEach((r) => console.log(tildePath(r)));
   return 0;
 }
@@ -162,7 +162,8 @@ async function main(): Promise<number> {
     case 'check': {
       const problems = check(diagrams);
       problems.forEach((p) => console.error(formatProblem(p)));
-      console.error(`${diagrams.length - problems.length}/${diagrams.length} diagrams OK`);
+      // Bun's console.error paints a TTY red; summaries aren't errors.
+      process.stderr.write(`${diagrams.length - problems.length}/${diagrams.length} diagrams OK\n`);
       return problems.length ? 1 : 0;
     }
 
@@ -173,7 +174,7 @@ async function main(): Promise<number> {
       }
       const problems = await renderAll(diagrams, values.out!, values.format);
       problems.forEach((p) => console.error(formatProblem(p)));
-      console.error(`${diagrams.length - problems.length}/${diagrams.length} diagrams rendered to ${values.out}`);
+      process.stderr.write(`${diagrams.length - problems.length}/${diagrams.length} diagrams rendered to ${values.out}\n`);
       return problems.length ? 1 : 0;
     }
   }
