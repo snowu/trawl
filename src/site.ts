@@ -5,6 +5,7 @@ import { check, formatProblem } from './commands.ts';
 import { gitRoot } from './find.ts';
 import { type Diagram, type Doc, parseDoc, slug } from './markdown.ts';
 import { svgToPng, toSvg } from './render.ts';
+import { sectionText } from './refs.ts';
 import { findMarkdown } from './scan.ts';
 // @ts-expect-error -- the browser app, imported as text (TS can't type a relative .js text import).
 import appJs from './site/app.js' with { type: 'text' };
@@ -40,7 +41,10 @@ export interface SiteSection {
   heading: string;
   crumb: string;
   anchor: string;
+  /** Plain text for search (truncated). */
   text: string;
+  /** The section as markdown (heading + body), for the remote MCP's `read`. */
+  markdown: string;
 }
 
 export interface SiteDoc {
@@ -225,6 +229,7 @@ export async function buildSite(opts: BuildOptions): Promise<{ data: SiteData; p
         crumb: s.crumb,
         anchor: s.level ? slug(s.heading) : '',
         text: plain(s.body).slice(0, 2000),
+        markdown: sectionText(s),
       })),
     });
   }

@@ -1,5 +1,4 @@
 import { detectType } from 'pele';
-import { basename } from 'node:path';
 
 export interface Diagram {
   /** Absolute path of the file holding the diagram. */
@@ -95,7 +94,7 @@ function assignIds(diagrams: Omit<Diagram, 'id' | 'explicitId'>[], explicit: (st
 
 /** Parses a markdown or .mmd file into sections and diagrams. Headings inside code fences are ignored. */
 export function parseDoc(file: string, text: string): Doc {
-  const name = basename(file);
+  const name = file.split('/').pop() ?? file;
   if (file.endsWith('.mmd')) {
     const title = name.replace(/\.mmd$/, '');
     const explicit = ID_COMMENT.exec(text)?.[1] ?? null;

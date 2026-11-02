@@ -169,6 +169,84 @@ the repo it was started in.
 | `render` | a diagram or raw source as a PNG image the agent can look at (or SVG text) |
 | `update_diagram` | replace one diagram's source in place; refuses source that doesn't parse and files outside trawl's folders |
 
+## Review site (for product and design)
+
+```sh
+trawl site -o site          # static site of this repo's docs and diagrams
+trawl site --serve          # build it into a temp folder and open it in the browser
+```
+
+A reader, not an editor: a folder tree and search on the left, each doc rendered with its diagrams inline, a gallery of
+every diagram (filter by type), click to zoom and pan, light and dark. Every diagram has:
+
+- **Request a change**: opens a GitHub issue pre-filled with the diagram's `file#id`, a link back and its current
+  Mermaid, labelled `trawl`. Ask an agent to "pick up the diagram requests" and it edits the source and opens a PR
+  (the skill knows how), which the PR action below then illustrates.
+- **Discussion** (issues mentioning that diagram), **FigJam** (when `.trawl/links.json` maps `file#id` to a board;
+  the skill writes it when it publishes), **Mermaid** source, **Copy**, **Link**.
+
+Raw HTML in the markdown is shown as text, so a doc can't run script in the shared site. The repo and branch come
+from `git remote`; override with `--repo OWNER/NAME --branch NAME`. The output is plain files (`index.html`,
+`trawl.json`, `d/*.svg|png`): host it anywhere. Publish it with GitHub Pages:
+
+```yaml
+# .github/workflows/docs-site.yml
+on: { push: { branches: [main] } }
+permissions: { contents: read, pages: write, id-token: write }
+jobs:
+  site:
+    runs-on: ubuntu-latest
+    environment: { name: github-pages, url: "${{ steps.deploy.outputs.page_url }}" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: snowu/trawl/actions/site@main
+      - id: deploy
+        uses: actions/deploy-pages@v4
+```
+
+(Pages on a private repo needs a paid plan; the folder works on Cloudflare Pages or any static host too.)
+
+## Diagram diffs on pull requests
+
+```sh
+trawl diff origin/main            # what this branch (incl. uncommitted work) adds, changes or removes
+trawl diff origin/main HEAD -o previews --comment comment.md --image-url URL
+```
+
+Diagrams are matched by id since the merge base, so a moved diagram isn't a change and a renamed heading (derived id)
+shows as removed + added; give important diagrams an explicit `id=`. In CI, the `pr-diff` action renders before/after
+PNGs, pushes them to a `trawl-previews` branch and keeps one comment on the PR up to date:
+
+```yaml
+# .github/workflows/diagrams.yml
+on: { pull_request: { paths: ['**/*.md', '**/*.mmd'] } }
+permissions: { contents: write, pull-requests: write }
+jobs:
+  diff:
+    if: github.event.pull_request.head.repo.full_name == github.repository   # forks get a read-only token
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: snowu/trawl/actions/pr-diff@main
+        # with: { site-url: https://you.github.io/repo/ }
+```
+
+## Hosted: site + remote MCP for the whole team
+
+[`worker/`](worker/README.md) deploys one Cloudflare Worker per docs repo that serves the review site at `/` and a
+remote MCP server at `/mcp`. Product and design add that URL to their Claude as a connector and can then ask it to
+find a flow, show it (rendered), and turn "the refund flow should send failed payments to support" into a change
+request issue or a ready PR, without cloning anything. Locked by a shared key; the write tools need a GitHub token
+scoped to that repo.
+
+```
+ people ─── browser ──▶  site (/)          ─┐
+ their Claude ── MCP ─▶  /mcp/<key>         ├─ reads trawl.json + rendered diagrams (built by `trawl site`)
+                         request_change ────┼─▶ GitHub issue (label trawl) ─▶ agent with the trawl skill ─▶ PR
+                         propose_change ────┘─▶ GitHub PR ─▶ pr-diff action: before/after comment ─▶ merge ─▶ redeploy
+```
+
 ## Try it
 
 `examples/` has mock diagrams of every common type (flowchart, sequence, class, ER, state, gantt, pie, timeline,

@@ -58,6 +58,26 @@ about, instead of describing the diagram in prose.
 trawl list [paths...]            # path:line<TAB>type<TAB>nearest heading, one per diagram
 ```
 
+## Change requests from the review site
+
+The review site (`trawl site`, see the README) has a "Request a change" button on every diagram; it opens a GitHub
+issue labelled `trawl` whose body ends with `<!-- trawl:ref FILE#ID -->`. To work on one (when the user asks, e.g.
+"pick up the diagram requests"):
+
+1. `gh issue list --label trawl`, then `gh issue view N` for the request and the ref.
+2. Read the diagram (`get_diagram FILE#ID` or open the file), make the change in the Mermaid source (`update_diagram`,
+   or edit the file and `trawl check` it), and `render` it to look at the result.
+3. Branch, commit and open a PR whose body says `Fixes #N` and what changed. If the repo uses the trawl PR action, the
+   PR gets a before/after comment for reviewers; don't paste images yourself.
+
+## Review site
+
+```sh
+trawl site -o DIR [--repo OWNER/NAME]   # static site of this repo's docs + diagrams (index.html, trawl.json, d/*)
+trawl site --serve                      # build into a temp folder and open it; runs until ctrl+c, so not for agents
+trawl diff BASE [HEAD]                  # diagrams added/changed/removed vs BASE (merge base), matched by id
+```
+
 ## Exporting
 
 ```sh
@@ -88,7 +108,9 @@ seats get 200 a day (more on Enterprise), so just go. With several plans, ask wh
    `fill:#CDF4D3,stroke:#66D575` green, `#FFE0C2/#FF9E42` orange, `#FFCDC2/#FF7556` red).
 3. Use the `planKey` from `whoami`, then `generate_diagram` named after the diagram's heading. Several diagrams: pass the
    first result's `fileKey` to the rest so they share one board instead of littering drafts.
-4. Give the user the returned link.
+4. Give the user the returned link, and record it in `.trawl/links.json` at the repo root (create it if needed):
+   `{ "docs/flows.md#checkout-flow": "https://www.figma.com/board/..." }`, keys are repo-relative `FILE#ID`. The review
+   site then shows an "Open in FigJam" button on that diagram, and you can find the board again for a pull.
 
 ### Publish: pixel-exact, or types FigJam can't build
 

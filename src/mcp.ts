@@ -7,14 +7,7 @@ import { svgToPng, toSvg } from './render.ts';
 import { Store } from './store.ts';
 import pkg from '../package.json' with { type: 'json' };
 
-type Json = Record<string, unknown>;
-type Content = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string };
-export interface ToolResult {
-  content: Content[];
-  isError?: boolean;
-}
-
-const PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
+import { type Content, fail, handle as handleMessage, type Json, type McpServer, type Request, text, type ToolResult } from './mcp-protocol.ts';
 
 const INSTRUCTIONS = `trawl indexes the user's markdown notes and docs (every configured folder plus the current repo) and the Mermaid diagrams in them.
 - search: find docs/sections by words (empty query = recently edited docs). read: get a section or file by ref.
@@ -77,8 +70,6 @@ export const TOOLS = [
   },
 ] as const;
 
-const text = (t: string): ToolResult => ({ content: [{ type: 'text', text: t }] });
-const fail = (t: string): ToolResult => ({ content: [{ type: 'text', text: t }], isError: true });
 
 function within(path: string, roots: string[]): boolean {
   return roots.some((r) => path === r || path.startsWith(`${r}/`));
@@ -94,13 +85,21 @@ async function pngContent(source: string): Promise<Content> {
 }
 
 /** The tool implementations, over one index and one default scope. */
-export class Tools {
+export class Tools implements McpServer {
+  readonly name = 'trawl';
+  readonly version = pkg.version;
+  readonly instructions = INSTRUCTIONS;
+
   private lastRefresh = 0;
   constructor(
     private store: Store,
     private roots: string[],
     private refreshEveryMs = 5000,
   ) {}
+
+  tools() {
+    return TOOLS;
+  }
 
   private async scope(p?: string[]): Promise<string[]> {
     const roots = p?.length ? p.map((x) => resolve(x)) : this.roots;
@@ -191,38 +190,9 @@ export class Tools {
   }
 }
 
-interface Request {
-  jsonrpc: '2.0';
-  id?: string | number;
-  method: string;
-  params?: Json;
-}
-
 /** Answers one JSON-RPC message; undefined for notifications. */
-export async function handle(tools: Tools, msg: Request): Promise<Json | undefined> {
-  const reply = (result: unknown) => ({ jsonrpc: '2.0', id: msg.id, result });
-  if (msg.id === undefined) return undefined;
-  switch (msg.method) {
-    case 'initialize': {
-      const asked = String(msg.params?.protocolVersion ?? '');
-      return reply({
-        protocolVersion: PROTOCOLS.includes(asked) ? asked : PROTOCOLS[0],
-        capabilities: { tools: {} },
-        serverInfo: { name: 'trawl', version: pkg.version },
-        instructions: INSTRUCTIONS,
-      });
-    }
-    case 'ping':
-      return reply({});
-    case 'tools/list':
-      return reply({ tools: TOOLS });
-    case 'tools/call': {
-      const p = msg.params ?? {};
-      return reply(await tools.call(String(p.name), (p.arguments as Json) ?? {}));
-    }
-    default:
-      return { jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: `method not found: ${msg.method}` } };
-  }
+export function handle(tools: Tools, msg: Request): Promise<Json | undefined> {
+  return handleMessage(tools, msg);
 }
 
 /** MCP over stdio: one JSON-RPC message per line in, one per line out. Logs go to stderr. */
