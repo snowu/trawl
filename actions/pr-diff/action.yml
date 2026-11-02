@@ -1,0 +1,101 @@
+name: trawl diagram diff
+description: Comment on a pull request with before/after images of every Mermaid diagram it adds, changes or removes.
+branding:
+  icon: git-pull-request
+  color: green
+
+inputs:
+  base:
+    description: Git ref to compare against (default the PR's base branch)
+    default: ''
+  previews-branch:
+    description: Branch the rendered PNGs are pushed to, so the comment can show them (created on first use)
+    default: trawl-previews
+  site-url:
+    description: Optional link to the published review site, added at the end of the comment
+    default: ''
+  token:
+    description: Token with contents:write (to push previews) and pull-requests:write (to comment)
+    default: ${{ github.token }}
+
+outputs:
+  changes:
+    description: Number of diagrams added, changed or removed
+    value: ${{ steps.diff.outputs.changes }}
+
+runs:
+  using: composite
+  steps:
+    - uses: oven-sh/setup-bun@v2
+
+    - name: Install trawl
+      shell: bash
+      run: cd "$GITHUB_ACTION_PATH/../.." && bun install --frozen-lockfile >/dev/null
+
+    - name: Diff diagrams
+      id: diff
+      shell: bash
+      env:
+        BASE: ${{ inputs.base || format('origin/{0}', github.base_ref) }}
+        PR: ${{ github.event.pull_request.number }}
+        SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        BRANCH: ${{ inputs.previews-branch }}
+        SITE_URL: ${{ inputs.site-url }}
+      run: |
+        set -euo pipefail
+        git fetch --no-tags --depth=200 origin "${BASE#origin/}" >/dev/null 2>&1 || true
+        out="$RUNNER_TEMP/trawl-previews/pr-$PR/$SHA"
+        url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/raw/$BRANCH/pr-$PR/$SHA"
+        bun "$GITHUB_ACTION_PATH/../../src/cli.ts" diff "$BASE" HEAD -o "$out" --comment "$RUNNER_TEMP/trawl-comment.md" --image-url "$url" | tee "$RUNNER_TEMP/trawl-diff.txt"
+        [[ -n "$SITE_URL" ]] && printf '\n[Browse all docs and diagrams](%s)\n' "$SITE_URL" >> "$RUNNER_TEMP/trawl-comment.md"
+        if grep -q '^No diagram changes' "$RUNNER_TEMP/trawl-diff.txt"; then n=0; else n=$(wc -l < "$RUNNER_TEMP/trawl-diff.txt"); fi
+        echo "changes=$n" >> "$GITHUB_OUTPUT"
+
+    - name: Push previews
+      if: steps.diff.outputs.changes != '0'
+      shell: bash
+      env:
+        PR: ${{ github.event.pull_request.number }}
+        SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        BRANCH: ${{ inputs.previews-branch }}
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        src="$RUNNER_TEMP/trawl-previews/pr-$PR/$SHA"
+        [[ -n "$(ls -A "$src" 2>/dev/null)" ]] || exit 0
+        work="$RUNNER_TEMP/trawl-previews-branch"
+        remote="https://x-access-token:${GH_TOKEN}@${GITHUB_SERVER_URL#https://}/$GITHUB_REPOSITORY.git"
+        if git ls-remote --exit-code --heads "$remote" "$BRANCH" >/dev/null 2>&1; then
+          git clone -q --depth 1 --branch "$BRANCH" "$remote" "$work"
+        else
+          git init -q "$work" && git -C "$work" checkout -q --orphan "$BRANCH"
+          printf 'Rendered diagram previews for PR comments, written by trawl. Safe to delete.\n' > "$work/README.md"
+        fi
+        mkdir -p "$work/pr-$PR/$SHA"
+        cp "$src"/*.png "$work/pr-$PR/$SHA/"
+        cd "$work"
+        git add -A
+        git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+          commit -qm "Diagram previews for #$PR ($SHA)"
+        git push -q "$remote" "HEAD:$BRANCH"
+
+    - name: Comment
+      shell: bash
+      env:
+        PR: ${{ github.event.pull_request.number }}
+        CHANGES: ${{ steps.diff.outputs.changes }}
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        [[ -n "$PR" ]] || { echo "Not a pull_request event; skipping the comment."; exit 0; }
+        existing=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
+          --jq '.[] | select(.body | startswith("<!-- trawl-diagram-diff -->")) | .id' | head -n1)
+        if [[ -n "$existing" ]]; then
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" -F body=@"$RUNNER_TEMP/trawl-comment.md" >/dev/null
+          echo "Updated comment $existing"
+        elif [[ "$CHANGES" != "0" ]]; then
+          gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@"$RUNNER_TEMP/trawl-comment.md" >/dev/null
+          echo "Commented on #$PR"
+        else
+          echo "No diagram changes; no comment."
+        fi

@@ -1,0 +1,20 @@
+name: diagrams
+
+on:
+  pull_request:
+    paths: ['**/*.md', '**/*.mmd']
+
+permissions:
+  contents: write        # push rendered previews to the trawl-previews branch
+  pull-requests: write   # comment on the PR
+
+jobs:
+  diff:
+    # Fork PRs get a read-only token; skip instead of failing.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./actions/pr-diff

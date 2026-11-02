@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { resolve } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { chooseFolders, pickRoots } from './choose.ts';
 import { check, diagramAt, formatProblem, renderAll } from './commands.ts';
@@ -30,6 +30,12 @@ Usage:
   trawl index [--rebuild]          update the search index now and print what it holds
   trawl mcp                        run as an MCP server on stdio (search, read, diagrams, check, render)
 
+  trawl site [paths...] -o DIR     build a review site of this repo's docs and diagrams (default dir: trawl-site)
+  trawl site --serve               build it into a temp folder and open it in the browser
+  trawl diff BASE [HEAD]           diagrams added/changed/removed between two git refs (HEAD: working tree)
+  trawl diff BASE -o DIR --comment FILE [--image-url URL]
+                                   also render before/after PNGs into DIR and write a PR comment to FILE
+
   trawl roots                      show the configured folders
   trawl roots pick                 choose them with fzf (anything under ~, or type a path)
   trawl roots add|remove DIR...    add or remove folders
@@ -45,11 +51,17 @@ Options:
   -i, --in DIR         find: search only this folder (repeatable)
       --plain          find: print results instead of opening fzf
       --limit N        find: at most N results (default 50)
+      --repo OWNER/NAME  site: GitHub repo for links and change requests (default: from git remote)
+      --branch NAME    site: branch for "View on GitHub" links (default: current)
+      --name NAME      site: title (default: the folder name)
+      --serve          site: serve the result locally and open the browser
+      --comment FILE   diff: write a markdown PR comment to FILE
+      --image-url URL  diff: public URL the -o DIR will be served from (used in the comment)
   -h, --help           show this help
   -v, --version        show the version
 `;
 
-const COMMANDS = new Set(['open', 'list', 'check', 'render', 'roots', 'find', 'show', 'index', 'mcp']);
+const COMMANDS = new Set(['open', 'list', 'check', 'render', 'roots', 'find', 'show', 'index', 'mcp', 'site', 'diff']);
 
 /**
  * Folders to scan, as absolute paths. `--all`: the configured roots. Paths given: those. Otherwise
@@ -181,13 +193,61 @@ async function indexCommand(rebuild?: boolean): Promise<number> {
   return 0;
 }
 
+/** `trawl site`: build the review site; --serve previews it locally. */
+async function siteCommand(
+  paths: string[],
+  opts: { out?: string; repo?: string; branch?: string; name?: string; serve?: boolean },
+): Promise<number> {
+  const { buildSite, repoInfo, siteRoot } = await import('./site.ts');
+  const root = paths.length === 1 && !/\.(md|mmd)$/.test(paths[0]) ? resolve(paths[0]) : siteRoot();
+  const out = resolve(opts.out ?? (opts.serve ? join(tmpdir(), `trawl-site-${process.pid}`) : 'trawl-site'));
+  const started = performance.now();
+  const { data, problems } = await buildSite({
+    paths: paths.length ? paths : [root],
+    root,
+    out,
+    name: opts.name,
+    repo: repoInfo(root, opts.repo, opts.branch),
+  });
+  problems.forEach((p) => console.error(p));
+  process.stderr.write(
+    `${data.docs.length} docs, ${data.diagrams.length} diagrams (${problems.length} broken) → ${tildePath(out)} in ${Math.round(performance.now() - started)}ms\n`,
+  );
+  if (!opts.serve) return 0;
+  const { serveDir } = await import('./serve.ts');
+  await serveDir(out);
+  return 0;
+}
+
+async function diffCommand(
+  refs: string[],
+  opts: { out?: string; comment?: string; 'image-url'?: string },
+): Promise<number> {
+  const { diagramDiff, formatChanges, prComment, renderChanges } = await import('./diff.ts');
+  const [base, head] = refs;
+  if (!base) {
+    console.error('trawl: diff needs a BASE git ref (e.g. origin/main)');
+    return 2;
+  }
+  const root = gitRoot();
+  if (!root) {
+    console.error('trawl: diff needs to run inside a git repo');
+    return 2;
+  }
+  const changes = await diagramDiff(root, base, head);
+  console.log(formatChanges(changes));
+  if (opts.out) await renderChanges(changes, resolve(opts.out));
+  if (opts.comment) await Bun.write(opts.comment, prComment(changes, { imageUrl: opts['image-url'] }));
+  return 0;
+}
+
 async function main(): Promise<number> {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
     options: {
       all: { type: 'boolean', short: 'a' },
       browser: { type: 'boolean', short: 'b' },
-      out: { type: 'string', short: 'o', default: 'trawl-out' },
+      out: { type: 'string', short: 'o' },
       format: { type: 'string', short: 'f', default: 'png' },
       help: { type: 'boolean', short: 'h' },
       version: { type: 'boolean', short: 'v' },
@@ -197,6 +257,12 @@ async function main(): Promise<number> {
       'no-refresh': { type: 'boolean' },
       rebuild: { type: 'boolean' },
       limit: { type: 'string', default: '50' },
+      repo: { type: 'string' },
+      branch: { type: 'string' },
+      name: { type: 'string' },
+      serve: { type: 'boolean' },
+      comment: { type: 'string' },
+      'image-url': { type: 'string' },
     },
   });
   if (values.help || values.version) {
@@ -211,6 +277,8 @@ async function main(): Promise<number> {
   if (command === 'show') return showCommand(positionals, values.color);
   if (command === 'find') return findCommand(positionals.join(' '), values, viewer);
   if (command === 'index') return indexCommand(values.rebuild);
+  if (command === 'site') return siteCommand(positionals, values);
+  if (command === 'diff') return diffCommand(positionals, values);
   if (command === 'mcp') {
     const { runMcp } = await import('./mcp.ts');
     await runMcp();
@@ -242,9 +310,10 @@ async function main(): Promise<number> {
         console.error(`--format must be png or svg, got ${values.format}`);
         return 2;
       }
-      const problems = await renderAll(diagrams, values.out!, values.format);
+      const out = values.out ?? 'trawl-out';
+      const problems = await renderAll(diagrams, out, values.format);
       problems.forEach((p) => console.error(formatProblem(p)));
-      process.stderr.write(`${diagrams.length - problems.length}/${diagrams.length} diagrams rendered to ${values.out}\n`);
+      process.stderr.write(`${diagrams.length - problems.length}/${diagrams.length} diagrams rendered to ${out}\n`);
       return problems.length ? 1 : 0;
     }
   }
