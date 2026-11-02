@@ -1,6 +1,8 @@
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
+import { detectType, parse } from 'pele';
 import { loadConfig } from './config.ts';
+import { ansiArt, asciiArt } from './render.ts';
 import { openDiagrams, type Viewer } from './open.ts';
 import { findSection, loadDoc, parseRef, sectionText } from './refs.ts';
 import { displayPath, tildePath } from './scan.ts';
@@ -25,7 +27,7 @@ export async function searchRoots(cwd = process.cwd()): Promise<string[]> {
   return unique.filter((r) => !unique.some((o) => o !== r && r.startsWith(`${o}/`)));
 }
 
-const ANSI = { dim: '\x1b[2m', bold: '\x1b[1m', hit: '\x1b[1;33m', reset: '\x1b[0m' };
+const ANSI = { dim: '\x1b[2m', bold: '\x1b[1m', hit: '\x1b[1;33m', warn: '\x1b[31m', reset: '\x1b[0m' };
 
 /** `path:line<TAB>crumb<TAB>snippet`; with color, matches are highlighted and the path dimmed. */
 export function formatHit(hit: Hit, color = false): string {
@@ -41,14 +43,46 @@ export function lookup(store: Store, query: string, roots: string[], limit = 50)
   return query.trim() ? store.search(query, { roots, limit }) : store.recent({ roots, limit });
 }
 
-/** `trawl show REF`: the section at REF (or the whole file) as markdown, prefixed with where it is. */
+const MERMAID_FENCE = /^([ \t]*)(```+|~~~+)[ \t]*mermaid\b[^\n]*\n([\s\S]*?)\n[ \t]*\2[ \t]*$/gm;
+
+/**
+ * Mermaid fences drawn as colored box art for the terminal, when the diagram parses, its type has a text
+ * renderer, and it fits `width` columns; otherwise the source stays, with a note saying why.
+ */
+export function drawDiagrams(markdown: string, width = Infinity): string {
+  return markdown.replace(MERMAID_FENCE, (block, _indent, _fence, source: string) => {
+    try {
+      parse(source);
+    } catch (e) {
+      // pele: "Parse error on line N:\n<source line>\n---^\nExpecting ...": keep the line number and the reason.
+      const message = e instanceof Error ? e.message : String(e);
+      const line = /line (\d+)/.exec(message)?.[1];
+      const reason = message.trim().split('\n').at(-1)!.trim();
+      return `${ANSI.warn}✗ doesn't parse${line ? ` (diagram line ${line})` : ''}: ${reason}${ANSI.reset}\n${block}`;
+    }
+    const art = asciiArt(source);
+    const type = detectType(source) ?? 'diagram';
+    if (!art) return `${ANSI.dim}◆ ${type}: no text preview for this type · ctrl-o opens it${ANSI.reset}\n${block}`;
+    const artWidth = Math.max(...art.split('\n').map((l) => [...l].length));
+    if (artWidth > width) return `${ANSI.dim}◆ ${type}: too wide to draw here (${artWidth} cols) · ctrl-/ widens the preview · ctrl-o opens it${ANSI.reset}\n${block}`;
+    return `${ANSI.dim}◆ ${type} · ctrl-o opens it${ANSI.reset}\n${ansiArt(art.replace(/\s+$/, ''))}`;
+  });
+}
+
+/**
+ * `trawl show REF`: the section at REF (or the whole file) as markdown, prefixed with where it is. With color
+ * (the fzf preview), diagrams are drawn as box art sized to the preview.
+ */
 export async function showRef(ref: string, color = false): Promise<string> {
   const r = parseRef(ref);
   const doc = await loadDoc(r.file);
   const section = findSection(doc, r);
   const header = section ? `${displayPath(doc.file)}:${section.line}  ${section.crumb}` : `${displayPath(doc.file)}  ${doc.title}`;
   const body = section ? sectionText(section) : await Bun.file(r.file).text();
-  return color ? `${ANSI.dim}${header}${ANSI.reset}\n\n${body}` : `${header}\n\n${body}`;
+  if (!color) return `${header}\n\n${body}`;
+  const width = Number(process.env.FZF_PREVIEW_COLUMNS) || process.stdout.columns || Infinity;
+  const drawn = doc.file.endsWith('.mmd') ? drawDiagrams(`\`\`\`mermaid\n${body.replace(/\n+$/, '')}\n\`\`\``, width) : drawDiagrams(body, width);
+  return `${ANSI.dim}${header}${ANSI.reset}\n\n${drawn}`;
 }
 
 /** How to run this same trawl again from a shell: the compiled binary, or bun + this script. */
@@ -77,13 +111,15 @@ export async function interactiveFind(query: string, roots: string[], viewer: Vi
       '--prompt',
       'docs> ',
       '--header',
-      `${roots.map(tildePath).join(', ')}\nenter: open in editor · ctrl-o: open its diagrams · ctrl-y: copy path:line · esc: quit`,
+      `${roots.map(tildePath).join(', ')}\nenter: open in editor · ctrl-o: open its diagrams · ctrl-/: wider preview · ctrl-y: copy path:line · esc: quit`,
       '--bind',
       `start:reload:${reload}`,
       '--bind',
       `change:reload:${reload}`,
       '--bind',
       `ctrl-y:execute-silent(printf %s {1} | (wl-copy || pbcopy || xclip -selection clipboard) 2>/dev/null)`,
+      '--bind',
+      'ctrl-/:change-preview-window(right,85%|right,55%)',
       '--expect',
       'ctrl-o',
       '--preview',

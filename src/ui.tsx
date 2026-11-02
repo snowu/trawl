@@ -18,7 +18,7 @@ import {
   zoomAt,
 } from './kitty.ts';
 import { MOUSE_OFF, MOUSE_ON, parseMouse } from './mouse.ts';
-import { renderToCache, toAscii } from './render.ts';
+import { asciiArt, colorRuns, renderToCache } from './render.ts';
 import { type Diagram, displayPath, tildePath } from './scan.ts';
 
 const PAN_STEP = 8;
@@ -36,40 +36,11 @@ export function filterDiagrams(diagrams: Diagram[], query: string): Diagram[] {
 const asciiCache = new Map<Diagram, string | null>();
 
 
-type Run = { text: string; kind: 'line' | 'arrow' | 'text' };
-// Box drawing, the corner glyphs used for some node shapes, and diamonds; then arrowheads.
-const LINE_CHARS = /[\u2500-\u257f\u2308-\u230f\u231c-\u231f\u25c6\u25c7]/;
-const ARROW_CHARS = /[\u25b2\u25b6\u25b8\u25ba\u25bc\u25c0\u25c2\u25c4\u2190-\u2193]/;
-
-/**
- * Splits a plain ASCII-art line into runs of box lines, arrowheads and label text, so the preview can color
- * them itself (the library's ANSI themes assume a light background and break truncation and panning).
- */
-export function colorRuns(line: string): Run[] {
-  const runs: Run[] = [];
-  for (const ch of line) {
-    const kind = ARROW_CHARS.test(ch) ? 'arrow' : LINE_CHARS.test(ch) ? 'line' : 'text';
-    const last = runs.at(-1);
-    if (last?.kind === kind) last.text += ch;
-    else runs.push({ text: ch, kind });
-  }
-  return runs;
-}
+export { colorRuns };
 
 /** Box-drawing preview, or null when beautiful-mermaid can't draw this diagram type. */
 function asciiPreview(diagram: Diagram): string | null {
-  if (!asciiCache.has(diagram)) {
-    try {
-      // Subgraph boxes carry a `rect [rgb(...)]` caption from the source's styling: draw it as plain border.
-      // HTML in labels (<b>, <br/>) is blanked to spaces of the same width so the boxes stay aligned.
-      const art = toAscii(diagram.source)
-        .replace(/rect \[rgb\([^)]*\)\]/g, (m) => '─'.repeat(m.length))
-        .replace(/<\/?[a-z]+\s*\/?>/gi, (m) => ' '.repeat(m.length));
-      asciiCache.set(diagram, art);
-    } catch {
-      asciiCache.set(diagram, null);
-    }
-  }
+  if (!asciiCache.has(diagram)) asciiCache.set(diagram, asciiArt(diagram.source));
   return asciiCache.get(diagram)!;
 }
 

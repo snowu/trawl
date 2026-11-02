@@ -89,3 +89,45 @@ export function toAscii(source: string): string {
     paddingY: 2,
   });
 }
+
+type Run = { text: string; kind: 'line' | 'arrow' | 'text' };
+// Box drawing, the corner glyphs used for some node shapes, and diamonds; then arrowheads.
+const LINE_CHARS = /[\u2500-\u257f\u2308-\u230f\u231c-\u231f\u25c6\u25c7]/;
+const ARROW_CHARS = /[\u25b2\u25b6\u25b8\u25ba\u25bc\u25c0\u25c2\u25c4\u2190-\u2193]/;
+
+/**
+ * Splits a plain ASCII-art line into runs of box lines, arrowheads and label text, so previews can color
+ * them themselves (the library's ANSI themes assume a light background and break truncation and panning).
+ */
+export function colorRuns(line: string): Run[] {
+  const runs: Run[] = [];
+  for (const ch of line) {
+    const kind = ARROW_CHARS.test(ch) ? 'arrow' : LINE_CHARS.test(ch) ? 'line' : 'text';
+    const last = runs.at(-1);
+    if (last?.kind === kind) last.text += ch;
+    else runs.push({ text: ch, kind });
+  }
+  return runs;
+}
+
+/** Cleaned-up box-drawing art for a diagram, or null when beautiful-mermaid can't draw its type. */
+export function asciiArt(source: string): string | null {
+  try {
+    // Subgraph boxes carry a `rect [rgb(...)]` caption from the source's styling: draw it as plain border.
+    // HTML in labels (<b>, <br/>) is blanked to spaces of the same width so the boxes stay aligned.
+    return toAscii(source)
+      .replace(/rect \[rgb\([^)]*\)\]/g, (m) => '─'.repeat(m.length))
+      .replace(/<\/?[a-z]+\s*\/?>/gi, (m) => ' '.repeat(m.length));
+  } catch {
+    return null;
+  }
+}
+
+/** Art with box lines gray and arrowheads cyan, for plain terminals (fzf previews). */
+export function ansiArt(art: string): string {
+  const color = { line: '\x1b[90m', arrow: '\x1b[36m', text: '' };
+  return art
+    .split('\n')
+    .map((l) => colorRuns(l).map((r) => (r.kind === 'text' ? r.text : `${color[r.kind]}${r.text}\x1b[0m`)).join(''))
+    .join('\n');
+}
