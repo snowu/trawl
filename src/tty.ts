@@ -7,7 +7,7 @@ import { closeSync, openSync } from 'node:fs';
 
 const IOCTL = {
   linux: { get: 0x5413, set: 0x5414, libc: 'libc.so.6' },
-  darwin: { get: 0x40087468, set: 0x80087467, libc: 'libc.dylib' },
+  darwin: { get: 0x40087468, set: 0x80087467, libc: '/usr/lib/libSystem.B.dylib' },
 } as const;
 
 /** rows, cols, xpixel, ypixel as the kernel stores them (four unsigned shorts). */
@@ -48,17 +48,16 @@ export function getWinsize(): Winsize | null {
 }
 
 /**
- * Writes cols x rows cells of `cell` pixels into the winsize record, replacing whatever is there: ConPTY can report a
- * pixel size that doesn't match the real cells, and fzf trusts it. `cell` should be measured (CSI 16 t). True when
- * the record now holds that size.
+ * Makes sure the winsize record has a pixel size, writing cols x rows cells of `cell` pixels only when it has none
+ * (0x0: ConPTY under WSL). A size the terminal set itself is left alone, even if it differs from `cell` (window
+ * padding, scaling): rewriting it would fight the terminal. True when the record now has a pixel size.
  */
 export function setPixelSize(cell: { width: number; height: number }): boolean {
   const consts = IOCTL[process.platform as keyof typeof IOCTL];
   const ws = getWinsize();
   if (!ws || !consts || !ws.rows || !ws.cols) return false;
-  const want = { xpixel: ws.cols * cell.width, ypixel: ws.rows * cell.height };
-  if (ws.xpixel === want.xpixel && ws.ypixel === want.ypixel) return true;
-  const ok = withTty((fd, ioctl) => ioctl(fd, consts.set, new Uint16Array([ws.rows, ws.cols, want.xpixel, want.ypixel])) === 0);
+  if (ws.xpixel > 0 && ws.ypixel > 0) return true;
+  const ok = withTty((fd, ioctl) => ioctl(fd, consts.set, new Uint16Array([ws.rows, ws.cols, ws.cols * cell.width, ws.rows * cell.height])) === 0);
   return !!ok;
 }
 
@@ -70,15 +69,15 @@ export function recordedCell(): { width: number; height: number } | null {
 }
 
 /**
- * Keeps the pixel size in the winsize record while a child (fzf) runs: something (WSL's ConPTY bridge, a terminal
- * resize) can reset it to 0, and fzf then draws placeholder boxes for images. Rewriting it also makes the kernel send
- * SIGWINCH, so fzf reads the size again and redraws. Returns a stop function.
+ * Keeps a pixel size in the winsize record while a child (fzf) runs: under WSL something resets it to 0 once fzf is
+ * up, and fzf then draws placeholder boxes for images. Only a 0 is repaired (a terminal's own size is never
+ * touched); the write makes the kernel send SIGWINCH, so fzf reads the size again and redraws. Returns a stop
+ * function.
  */
 export function keepPixelSize(cell: { width: number; height: number }, onFix?: (from: Winsize) => void, everyMs = 250): () => void {
   const timer = setInterval(() => {
     const ws = getWinsize();
-    if (!ws || !ws.rows || !ws.cols) return;
-    if (ws.xpixel === ws.cols * cell.width && ws.ypixel === ws.rows * cell.height) return;
+    if (!ws || !ws.rows || !ws.cols || (ws.xpixel > 0 && ws.ypixel > 0)) return;
     onFix?.(ws);
     setPixelSize(cell);
   }, everyMs);

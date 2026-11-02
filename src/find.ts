@@ -267,11 +267,16 @@ export async function interactiveFind(query: string, roots: string[], viewer: Vi
   // Sixel in fzf's preview only when the cell size is known and fzf can learn the pixel size too (see tty.ts);
   // otherwise box art. Kitty images aren't sized or cleared by fzf's preview, so they get box art as well.
   const pixels = images === 'sixel' && cellMeasured && setPixelSize(cellPixels);
-  debugLog(`find: images ${images}, cell ${cellPixels.width}x${cellPixels.height} measured ${cellMeasured}, pixel size written ${pixels}`);
+  debugLog(`find: images ${images}, cell ${cellPixels.width}x${cellPixels.height} measured ${cellMeasured}, pixel size available ${pixels}`);
   if (pixels) {
     if (terminalBackground) env.TRAWL_BG = `#${terminalBackground.map((c) => c.toString(16).padStart(2, '0')).join('')}`;
     env.TRAWL_PREVIEW_IMAGES = 'sixel';
-    env.TRAWL_CELL = `${cellPixels.width}x${cellPixels.height}`;
+    // fzf counts image lines with the record's cell size, which can differ from the measured one when the terminal
+    // set its own (padding): size images by the record so fzf's count matches. Previews can't read it themselves.
+    const recorded = recordedCell();
+    env.TRAWL_CELL = recorded
+      ? `${Math.max(1, Math.floor(recorded.width))}x${Math.max(1, Math.floor(recorded.height))}`
+      : `${cellPixels.width}x${cellPixels.height}`;
   } else {
     delete env.TRAWL_PREVIEW_IMAGES;
   }
