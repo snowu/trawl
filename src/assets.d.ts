@@ -7,3 +7,8 @@ declare module '*.wasm' {
   const path: string;
   export default path;
 }
+// `import x from '...' with { type: 'text' }` yields the file's contents.
+declare module '*.css' {
+  const text: string;
+  export default text;
+}

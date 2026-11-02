@@ -1,7 +1,8 @@
 # trawl
 
-Find every Mermaid diagram in a set of folders, preview it in the terminal, and open it as a crisp PNG in
-[feh](https://feh.finalrewind.org/) (or as an SVG in your browser).
+Search every markdown doc on your machine, find every Mermaid diagram in them, preview diagrams in the terminal and
+open them as crisp PNGs in [feh](https://feh.finalrewind.org/) (or as SVGs in your browser). Agents get the same
+through an MCP server: search and read your docs, check, render (as images they can look at) and edit diagrams.
 
 ![trawl: lint, open the picker with alt+m, browse real rendered previews, filter, zoom, view source, export](demo/trawl-demo.gif)
 
@@ -15,6 +16,10 @@ Find every Mermaid diagram in a set of folders, preview it in the terminal, and 
   ([beautiful-mermaid](https://github.com/lukilabs/beautiful-mermaid): flowchart, sequence, state, class, ER and XY
   charts; other types show their source). `TRAWL_IMAGES=0` or `=1` overrides the detection.
 - `trawl check` doubles as a Mermaid linter for CI.
+- `trawl find` (alt+k) searches every doc and section in your folders and the repo you're in: live results in fzf,
+  the matching section as preview, enter opens it in `$EDITOR` at that line. A full-text index (SQLite) is updated
+  incrementally, so searching thousands of notes stays instant.
+- `trawl mcp` is an MCP server for Claude Code, Claude Desktop, Cursor or any MCP client (see [MCP](#mcp)).
 
 ## Install
 
@@ -30,12 +35,15 @@ The installer, re-runnable at any time:
 2. asks which folders trawl scans (`trawl roots pick`: fzf over `~`, or type any path),
 3. adds a shell keybind to `~/.zshrc` / `~/.bashrc`: **alt+m** (letter configurable) opens the picker on the repo
    you're in,
-4. installs a [Claude Code](https://claude.com/claude-code) skill (`~/.claude/skills/trawl`) so agents run
+4. adds **alt+k**, which searches your docs (`trawl find`),
+5. installs a [Claude Code](https://claude.com/claude-code) skill (`~/.claude/skills/trawl`) so agents run
    `trawl check` on diagrams they write and `trawl open` to show them to you. With Figma's MCP connected
    (`claude plugin install figma@claude-plugins-official`, then `/mcp` → figma → Authenticate) they can also publish
    diagrams as editable FigJam boards and pull boards back into your markdown as Mermaid; just ask.
+6. registers `trawl mcp` as a user-scoped MCP server in Claude Code (`claude mcp add -s user trawl -- trawl mcp`).
 
-`./install.sh --yes` takes every default without asking; `--no-keybind` and `--no-skill` skip those steps.
+`./install.sh --yes` takes every default without asking; `--no-keybind`, `--no-skill` and `--no-mcp` skip those
+steps.
 The keybind works in any terminal and inside tmux/herdr, wherever you are at a zsh or bash prompt (on macOS, set the
 terminal's Option key to send Esc/Meta).
 
@@ -47,8 +55,8 @@ Prebuilt binaries for linux/macOS x64/arm64 are also attached to [Releases](../.
 ./uninstall.sh          # lists what it found, asks, then removes it; --yes to skip the question
 ```
 
-It removes the binary, `~/.config/trawl` (config + generated keybind files), `~/.cache/trawl`,
-`~/.claude/skills/trawl` and the `# >>> trawl >>>` block in `~/.zshrc` / `~/.bashrc`. Nothing else in your rc files
+It removes the binary, `~/.config/trawl` (config + generated keybind files), `~/.cache/trawl` (renders and the
+search index), `~/.claude/skills/trawl`, the `trawl` MCP server registration and the `# >>> trawl >>>` block in `~/.zshrc` / `~/.bashrc`. Nothing else in your rc files
 is touched.
 
 ### Clean install
@@ -79,7 +87,34 @@ trawl open docs/a.md:40    # open the diagram at line 40 straight away (no picke
 trawl list docs            # path:line  type  title, one per line (pipe-friendly)
 trawl check docs           # syntax errors with file:line, exit 1 if any
 trawl render docs -o out   # write every diagram to out/ as PNG (--format svg for SVG)
+
+trawl find                 # search all your docs (fzf; alt+k)
+trawl find refund policy   # same, starting from a query
+trawl find --plain refund  # path:line  section › breadcrumb  snippet (scripts, agents)
+trawl find -i ~/notes q    # only in this folder (repeatable)
+trawl show a.md:40         # print the section at line 40 (or a.md#heading-slug, a.md#diagram-id)
+trawl index                # update the index now and print what it holds (--rebuild to start over)
 ```
+
+`find` searches your configured folders plus the repo you're in. Every word must match (prefixes and plurals
+count: `refund` finds "refunds"); headings weigh more than body text. An empty query lists recently edited docs.
+In the fzf view: enter opens the section in `$VISUAL`/`$EDITOR`, ctrl-o opens the diagrams in that section,
+ctrl-y copies `path:line`.
+
+### Diagram ids
+
+Each diagram has an id that stays put while lines move around it, so agents, links and reviews can point at it as
+`file.md#id`. By default it is the nearest heading as a slug (`## Order Lifecycle` → `order-lifecycle`, repeats get
+`-2`, `-3`). Pin one that survives renaming the heading with either:
+
+````md
+```mermaid id=checkout-flow
+flowchart LR
+  ...
+```
+````
+
+or a `%% trawl:id checkout-flow` line inside the diagram (works in `.mmd` files too).
 
 Configured folders:
 
@@ -117,6 +152,100 @@ Rendered files are cached in `$XDG_CACHE_HOME/trawl` (default `~/.cache/trawl`),
 
 Directories are walked recursively, skipping dot-directories (`.git`, `.venv`, ...) and `node_modules`, `dist`,
 `build`, `vendor`, `__pycache__`.
+
+## MCP
+
+`trawl mcp` speaks MCP on stdio. The installer registers it for Claude Code; for other clients add
+`"trawl": { "command": "trawl", "args": ["mcp"] }` to their MCP config. Its scope is your configured folders plus
+the repo it was started in.
+
+| Tool | What it does |
+|---|---|
+| `search` | full-text search over docs and sections; empty query = recently edited docs |
+| `read` | a section (`file:LINE`, `file#heading-slug`) or a whole file |
+| `list_diagrams` | every diagram as `path#id`, type, title; optional word filter |
+| `get_diagram` | one diagram's source, location and whether it parses |
+| `check` | syntax-check raw source, one diagram, or every diagram under some folders |
+| `render` | a diagram or raw source as a PNG image the agent can look at (or SVG text) |
+| `update_diagram` | replace one diagram's source in place; refuses source that doesn't parse and files outside trawl's folders |
+
+## Review site (for product and design)
+
+```sh
+trawl site -o site          # static site of this repo's docs and diagrams
+trawl site --serve          # build it into a temp folder and open it in the browser
+```
+
+A reader, not an editor: a folder tree and search on the left, each doc rendered with its diagrams inline, a gallery of
+every diagram (filter by type), click to zoom and pan, light and dark. Every diagram has:
+
+- **Request a change**: opens a GitHub issue pre-filled with the diagram's `file#id`, a link back and its current
+  Mermaid, labelled `trawl`. Ask an agent to "pick up the diagram requests" and it edits the source and opens a PR
+  (the skill knows how), which the PR action below then illustrates.
+- **Discussion** (issues mentioning that diagram), **FigJam** (when `.trawl/links.json` maps `file#id` to a board;
+  the skill writes it when it publishes), **Mermaid** source, **Copy**, **Link**.
+
+Raw HTML in the markdown is shown as text, so a doc can't run script in the shared site. The repo and branch come
+from `git remote`; override with `--repo OWNER/NAME --branch NAME`. The output is plain files (`index.html`,
+`trawl.json`, `d/*.svg|png`): host it anywhere. Publish it with GitHub Pages:
+
+```yaml
+# .github/workflows/docs-site.yml
+on: { push: { branches: [main] } }
+permissions: { contents: read, pages: write, id-token: write }
+jobs:
+  site:
+    runs-on: ubuntu-latest
+    environment: { name: github-pages, url: "${{ steps.deploy.outputs.page_url }}" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: snowu/trawl/actions/site@main
+      - id: deploy
+        uses: actions/deploy-pages@v4
+```
+
+(Pages on a private repo needs a paid plan; the folder works on Cloudflare Pages or any static host too.)
+
+## Diagram diffs on pull requests
+
+```sh
+trawl diff origin/main            # what this branch (incl. uncommitted work) adds, changes or removes
+trawl diff origin/main HEAD -o previews --comment comment.md --image-url URL
+```
+
+Diagrams are matched by id since the merge base, so a moved diagram isn't a change and a renamed heading (derived id)
+shows as removed + added; give important diagrams an explicit `id=`. In CI, the `pr-diff` action renders before/after
+PNGs, pushes them to a `trawl-previews` branch and keeps one comment on the PR up to date:
+
+```yaml
+# .github/workflows/diagrams.yml
+on: { pull_request: { paths: ['**/*.md', '**/*.mmd'] } }
+permissions: { contents: write, pull-requests: write }
+jobs:
+  diff:
+    if: github.event.pull_request.head.repo.full_name == github.repository   # forks get a read-only token
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: snowu/trawl/actions/pr-diff@main
+        # with: { site-url: https://you.github.io/repo/ }
+```
+
+## Hosted: site + remote MCP for the whole team
+
+[`worker/`](worker/README.md) deploys one Cloudflare Worker per docs repo that serves the review site at `/` and a
+remote MCP server at `/mcp`. Product and design add that URL to their Claude as a connector and can then ask it to
+find a flow, show it (rendered), and turn "the refund flow should send failed payments to support" into a change
+request issue or a ready PR, without cloning anything. Locked by a shared key; the write tools need a GitHub token
+scoped to that repo.
+
+```
+ people ─── browser ──▶  site (/)          ─┐
+ their Claude ── MCP ─▶  /mcp/<key>         ├─ reads trawl.json + rendered diagrams (built by `trawl site`)
+                         request_change ────┼─▶ GitHub issue (label trawl) ─▶ agent with the trawl skill ─▶ PR
+                         propose_change ────┘─▶ GitHub PR ─▶ pr-diff action: before/after comment ─▶ merge ─▶ redeploy
+```
 
 ## Try it
 

@@ -1,0 +1,50 @@
+name: trawl review site
+description: Build a browsable site of a repo's docs and Mermaid diagrams (search, zoom, "request a change" issues) for GitHub Pages or any static host.
+branding:
+  icon: book-open
+  color: green
+
+inputs:
+  paths:
+    description: Space-separated folders/files to publish (default the whole repo)
+    default: .
+  out:
+    description: Output folder
+    default: _trawl-site
+  name:
+    description: Site title (default the repo name)
+    default: ''
+  upload-pages-artifact:
+    description: Also upload the folder with actions/upload-pages-artifact, ready for actions/deploy-pages
+    default: 'true'
+
+outputs:
+  path:
+    description: The built site folder
+    value: ${{ inputs.out }}
+
+runs:
+  using: composite
+  steps:
+    - uses: oven-sh/setup-bun@v2
+
+    - name: Install trawl
+      shell: bash
+      run: cd "$GITHUB_ACTION_PATH/../.." && bun install --frozen-lockfile >/dev/null
+
+    - name: Build site
+      shell: bash
+      env:
+        PATHS: ${{ inputs.paths }}
+        OUT: ${{ inputs.out }}
+        NAME: ${{ inputs.name || github.event.repository.name }}
+      run: |
+        set -euo pipefail
+        # shellcheck disable=SC2086 # PATHS is a space-separated list on purpose
+        bun "$GITHUB_ACTION_PATH/../../src/cli.ts" site $PATHS -o "$OUT" --name "$NAME" --repo "$GITHUB_REPOSITORY" --branch "$GITHUB_REF_NAME"
+        touch "$OUT/.nojekyll"
+
+    - if: inputs.upload-pages-artifact == 'true'
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: ${{ inputs.out }}

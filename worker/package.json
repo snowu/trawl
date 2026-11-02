@@ -1,0 +1,13 @@
+{
+  "name": "trawl-docs-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "cd .. && bun src/cli.ts site \"${TRAWL_DOCS:-.}\" -o worker/public",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "4.151.1"
+  }
+}

@@ -1,12 +1,34 @@
 ---
 name: trawl
-description: Validate and show Mermaid diagrams with the `trawl` CLI. Use after writing or editing any mermaid block (```mermaid in .md, or .mmd files) to catch syntax errors, when the user asks to see/preview/open a diagram, or to find existing diagrams in a repo. Not for generating images to embed in docs unless asked (use `trawl render` then). Also for sending diagrams to Figma/FigJam or pulling FigJam boards back into the repo as Mermaid.
+description: Search the user's markdown notes and docs across their machine, and validate, render and show Mermaid diagrams, with the `trawl` CLI or its MCP tools. Use when the user refers to something they wrote down ("my notes on X", "the spec for Y", "where did I document Z"), after writing or editing any mermaid block (```mermaid in .md, or .mmd files) to catch syntax errors, when the user asks to see/preview/open a diagram, or to find existing diagrams. Not for generating images to embed in docs unless asked (use `trawl render` then). Also for sending diagrams to Figma/FigJam or pulling FigJam boards back into the repo as Mermaid.
 ---
 
 # trawl
 
-`trawl` finds Mermaid diagrams in `.md` (```mermaid / ~~~mermaid fences) and `.mmd` files, checks their syntax, and
+`trawl` indexes every markdown doc in the user's configured folders (plus the current repo) for full-text search,
+and finds Mermaid diagrams in `.md` (```mermaid / ~~~mermaid fences) and `.mmd` files, checks their syntax, and
 opens them as PNGs in feh (or SVGs in the browser). It renders without a browser, so it is fast and safe to run.
+
+**If the `trawl` MCP tools are connected** (`search`, `read`, `list_diagrams`, `get_diagram`, `check`, `render`,
+`update_diagram`), prefer them to the CLI: same behaviour, and `render` returns the diagram as an image, so look at
+it after writing a diagram to catch layout problems (crossing edges, cramped labels) that `check` can't see.
+
+## Searching the user's docs
+
+```sh
+trawl find --plain WORDS...          # path:line<TAB>section breadcrumb<TAB>snippet, best first; exit 1 if none
+trawl find --plain -i DIR WORDS...   # only under DIR (repeatable)
+trawl show FILE:LINE                 # print that section; FILE#heading-slug also works; FILE alone = whole file
+```
+
+Every word must match (prefix and stem: `refund` finds "refunds"); use 1-3 distinctive words, then `show` the best
+hits. An empty query lists recently edited docs. Never run `trawl find` without `--plain`: it opens fzf.
+
+## Diagram ids
+
+Every diagram has an id, addressable as `FILE#ID`: the nearest heading's slug by default, or an explicit one from
+` ```mermaid id=checkout-flow ` or a `%% trawl:id checkout-flow` line. When you create a diagram others will link to
+or review, give it an explicit id.
 
 ## After writing or editing a diagram: always check it
 
@@ -34,6 +56,26 @@ about, instead of describing the diagram in prose.
 
 ```sh
 trawl list [paths...]            # path:line<TAB>type<TAB>nearest heading, one per diagram
+```
+
+## Change requests from the review site
+
+The review site (`trawl site`, see the README) has a "Request a change" button on every diagram; it opens a GitHub
+issue labelled `trawl` whose body ends with `<!-- trawl:ref FILE#ID -->`. To work on one (when the user asks, e.g.
+"pick up the diagram requests"):
+
+1. `gh issue list --label trawl`, then `gh issue view N` for the request and the ref.
+2. Read the diagram (`get_diagram FILE#ID` or open the file), make the change in the Mermaid source (`update_diagram`,
+   or edit the file and `trawl check` it), and `render` it to look at the result.
+3. Branch, commit and open a PR whose body says `Fixes #N` and what changed. If the repo uses the trawl PR action, the
+   PR gets a before/after comment for reviewers; don't paste images yourself.
+
+## Review site
+
+```sh
+trawl site -o DIR [--repo OWNER/NAME]   # static site of this repo's docs + diagrams (index.html, trawl.json, d/*)
+trawl site --serve                      # build into a temp folder and open it; runs until ctrl+c, so not for agents
+trawl diff BASE [HEAD]                  # diagrams added/changed/removed vs BASE (merge base), matched by id
 ```
 
 ## Exporting
@@ -66,7 +108,9 @@ seats get 200 a day (more on Enterprise), so just go. With several plans, ask wh
    `fill:#CDF4D3,stroke:#66D575` green, `#FFE0C2/#FF9E42` orange, `#FFCDC2/#FF7556` red).
 3. Use the `planKey` from `whoami`, then `generate_diagram` named after the diagram's heading. Several diagrams: pass the
    first result's `fileKey` to the rest so they share one board instead of littering drafts.
-4. Give the user the returned link.
+4. Give the user the returned link, and record it in `.trawl/links.json` at the repo root (create it if needed):
+   `{ "docs/flows.md#checkout-flow": "https://www.figma.com/board/..." }`, keys are repo-relative `FILE#ID`. The review
+   site then shows an "Open in FigJam" button on that diagram, and you can find the board again for a pull.
 
 ### Publish: pixel-exact, or types FigJam can't build
 
@@ -89,4 +133,5 @@ upload the SVG into the user's Figma file with `upload_assets` (needs that file'
 ## Don't
 
 - Don't run bare `trawl` or `trawl PATH` (no subcommand): it opens an interactive picker meant for humans and will
-  hang without a terminal. Same for `trawl roots pick`.
+  hang without a terminal. Same for `trawl roots pick` and `trawl find` without `--plain`.
+- Don't run `trawl mcp` yourself; it's the MCP server your client starts.
