@@ -203,7 +203,7 @@ export async function buildSite(opts: BuildOptions): Promise<{ data: SiteData; p
       const problem = check([d])[0];
       if (problem) {
         entry.error = formatProblem({ ...problem, diagram: { ...problem.diagram, file: path } }).replace(/^[^:]+:\d+: /, '');
-        problems.push(`${path}:${problem.line}: ${problem.message.split('\n')[0]}`);
+        problems.push(`${path}:${problem.line}: syntax error, published as broken\n${problem.message.replace(/^/gm, '    ')}`);
       } else {
         const hash = new Bun.CryptoHasher('sha1').update(d.source).digest('hex').slice(0, 12);
         const svg = toSvg(d.source);

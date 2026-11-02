@@ -71,7 +71,7 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 .nav a:hover { background: var(--card); text-decoration: none; }
 .nav a.on { background: var(--accent-soft); color: var(--accent); font-weight: 550; }
 .nav .count { margin-left: auto; color: var(--muted); font-size: 12px; }
-.hit { display: block; padding: 8px; border-radius: 6px; color: var(--text); }
+.nav a.hit { display: block; padding: 8px; border-radius: 6px; color: var(--text); font-weight: 400; }
 .hit:hover { background: var(--card); text-decoration: none; }
 .hit .crumb { font-weight: 550; font-size: 14px; }
 .hit .path { color: var(--muted); font-size: 12px; }
