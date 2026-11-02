@@ -66,6 +66,23 @@ export async function svgToPng(svg: string): Promise<Uint8Array> {
   }
 }
 
+/** Rasterizes an SVG at 2x like svgToPng, as raw RGBA pixels (for sixel, which can't take a PNG). */
+export async function svgToRgba(svg: string): Promise<{ width: number; height: number; data: Uint8Array }> {
+  const fontBuffers = await loadRasterizer();
+  const resvg = new Resvg(inlineCssVars(svg), {
+    background: '#fff',
+    fitTo: { mode: 'zoom', value: 2 },
+    font: { fontBuffers, defaultFontFamily: FONT, sansSerifFamily: FONT, loadSystemFonts: false },
+  });
+  const image = resvg.render();
+  try {
+    return { width: image.width, height: image.height, data: new Uint8Array(image.pixels) };
+  } finally {
+    image.free();
+    resvg.free();
+  }
+}
+
 /** Writes the diagram's SVG or PNG to the cache (keyed by source hash) and returns its path. */
 export async function renderToCache(source: string, format: 'svg' | 'png'): Promise<string> {
   const hash = new Bun.CryptoHasher('sha1').update(`${pkg.version}\0${source}`).digest('hex').slice(0, 16);

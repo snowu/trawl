@@ -11,10 +11,11 @@ through an MCP server: search and read your docs, check, render (as images they 
 - Renders without a browser or Chromium: [pele](https://github.com/obsidianmd/pele) draws the SVG,
   [resvg](https://github.com/linebender/resvg) rasterizes it with a bundled Inter font, so PNGs look the same on every
   machine.
-- Previews the real rendered diagram inside the picker in terminals that support inline images (Ghostty, kitty,
-  WezTerm). Elsewhere (Alacritty, tmux, ...) it falls back to colored box-drawing art
+- Previews the real rendered diagram inside the picker in terminals that support inline images: the kitty protocol
+  (Ghostty, kitty, WezTerm) or sixel (Windows Terminal 1.22+, foot, Konsole, xterm -ti vt340, ...; detected by
+  asking the terminal). Elsewhere (Alacritty, tmux, ...) it falls back to colored box-drawing art
   ([beautiful-mermaid](https://github.com/lukilabs/beautiful-mermaid): flowchart, sequence, state, class, ER and XY
-  charts; other types show their source). `TRAWL_IMAGES=0` or `=1` overrides the detection.
+  charts; other types show their source). `TRAWL_IMAGES=0`, `=kitty` or `=sixel` overrides the detection.
 - `trawl check` doubles as a Mermaid linter for CI.
 - `trawl find` (alt+k) searches every doc and section in your folders and the repo you're in: live results in fzf,
   the matching section as preview, enter opens it in `$EDITOR` at that line. A full-text index (SQLite) is updated

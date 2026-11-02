@@ -5,12 +5,13 @@ import { copyText } from './clipboard.ts';
 import { check } from './commands.ts';
 import { openDiagrams, type Viewer } from './open.ts';
 import {
+  cellPixels,
   clearImage,
+  detectImages,
   FULL_VIEW,
   imageArea,
   hideImage,
-  imagesSupported,
-  queryCellAspect,
+  type ImageMode,
   panBy,
   placeImage,
   transmitImage,
@@ -18,7 +19,8 @@ import {
   zoomAt,
 } from './kitty.ts';
 import { MOUSE_OFF, MOUSE_ON, parseMouse } from './mouse.ts';
-import { asciiArt, colorRuns, renderToCache } from './render.ts';
+import { asciiArt, colorRuns, renderToCache, svgToRgba, toSvg } from './render.ts';
+import { encodeSixel, type Rgba, scaleCrop } from './sixel.ts';
 import { type Diagram, displayPath, tildePath } from './scan.ts';
 
 const PAN_STEP = 8;
@@ -85,11 +87,13 @@ interface PickerProps {
   roots: string[];
   viewer: Viewer;
   /** Real rendered PNGs in the preview pane (Ghostty, kitty, WezTerm); colored ASCII otherwise. */
-  images: boolean;
+  /** How to show real images; true means kitty (kept for callers that only know on/off). */
+  images: ImageMode | boolean;
   onDone: (r: PickerResult) => void;
 }
 
-export function Picker({ diagrams, roots, viewer, images, onDone }: PickerProps) {
+export function Picker({ diagrams, roots, viewer, images: imagesProp, onDone }: PickerProps) {
+  const images: ImageMode = imagesProp === true ? 'kitty' : imagesProp;
   const { exit } = useApp();
   const { columns, rows } = useWindowSize();
   const [query, setQuery] = useState('');
@@ -203,16 +207,18 @@ export function Picker({ diagrams, roots, viewer, images, onDone }: PickerProps)
   const ascii = current && !showSource && !problem && !imageMode ? asciiPreview(current) : null;
 
   // Image preview: render the PNG (cached) once the cursor rests, upload it, then place it after every redraw.
-  const [image, setImage] = useState<{ diagram: Diagram; png: Uint8Array } | null>(null);
+  const [image, setImage] = useState<{ diagram: Diagram; png: Uint8Array; rgba?: Rgba } | null>(null);
   useEffect(() => {
     if (!imageMode || !current) return;
     let live = true;
     const timer = setTimeout(async () => {
       try {
         const png = await Bun.file(await renderToCache(current.source, 'png')).bytes();
+        // Sixel needs raw pixels; same 2x render as the PNG, so zoom/pan math in PNG pixels applies to both.
+        const rgba = images === 'sixel' ? await svgToRgba(toSvg(current.source)) : undefined;
         if (!live) return;
-        process.stdout.write(transmitImage(png));
-        setImage({ diagram: current, png });
+        if (images === 'kitty') process.stdout.write(transmitImage(png));
+        setImage({ diagram: current, png, rgba });
       } catch {
         if (live) setImageError(current);
       }
@@ -229,11 +235,59 @@ export function Picker({ diagrams, roots, viewer, images, onDone }: PickerProps)
   // Pane interior below the title line and its margin.
   const imageBox = { row: 5, col: listWidth + 3, cols: previewWidth - 4, rows: bodyHeight - 2 };
   useEffect(() => {
-    if (!images) return;
+    if (images !== 'kitty') return;
     // After Ink has written this frame: text redraws don't remove images, so place (or hide) explicitly.
     const timer = setTimeout(() => process.stdout.write(shown ? placeImage(shown.png, imageBox, view) : hideImage()), 30);
     return () => clearTimeout(timer);
   });
+  // Sixel: the encoded frame for what's shown now (cached per diagram, size and view); the repaint hook below
+  // draws it after every frame Ink writes, since Ink's redraw erases the pixels.
+  const sixelFrame = useRef<string | null>(null);
+  const sixelCache = useRef<{ key: string; frame: string } | null>(null);
+  if (images === 'sixel') {
+    if (shown?.rgba) {
+      const area = imageArea(shown.png, imageBox);
+      const key = `${shown.diagram.file}:${shown.diagram.line}:${area.cols}x${area.rows}:${view.zoom},${view.x},${view.y}`;
+      if (sixelCache.current?.key !== key) {
+        const pixels = scaleCrop(shown.rgba, view, area.cols * cellPixels.width, area.rows * cellPixels.height);
+        sixelCache.current = { key, frame: `\x1b7\x1b[${area.row};${area.col}H${encodeSixel(pixels)}\x1b8` };
+      }
+      sixelFrame.current = sixelCache.current.frame;
+    } else sixelFrame.current = null;
+  }
+  useEffect(() => {
+    if (images !== 'sixel') return;
+    const write = process.stdout.write.bind(process.stdout);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let painting = false;
+    const paint = () => {
+      if (!sixelFrame.current) return;
+      painting = true;
+      try {
+        write(sixelFrame.current);
+      } finally {
+        painting = false;
+      }
+    };
+    process.stdout.write = ((...args: Parameters<typeof write>) => {
+      const ok = write(...args);
+      if (!painting) {
+        clearTimeout(timer);
+        timer = setTimeout(paint, 20);
+      }
+      return ok;
+    }) as typeof process.stdout.write;
+    return () => {
+      clearTimeout(timer);
+      process.stdout.write = write;
+    };
+  }, []);
+  // A new image (or zoom) with no text change still needs a paint.
+  useEffect(() => {
+    if (images !== 'sixel') return;
+    const timer = setTimeout(() => sixelFrame.current && process.stdout.write(''), 40);
+    return () => clearTimeout(timer);
+  }, [shown, view, imageBox.cols, imageBox.rows]);
   const previewBody = ascii ?? current?.source ?? '';
   // Cut lines at the pane edge ourselves (no "…" column) and say when there's more to pan or scroll to.
   const artWidth = previewWidth - 4;
@@ -454,8 +508,7 @@ export async function runPicker(diagrams: Diagram[], roots: string[], viewer: Vi
   // Ink switches screens without homing the cursor, so a keybind fired mid-prompt would draw the first
   // row at the prompt's column: enter the alternate screen and home the cursor ourselves first.
   process.stdout.write('\x1b[?1049h\x1b[H');
-  const images = imagesSupported();
-  if (images) await queryCellAspect();
+  const images = await detectImages();
   const app = render(<Picker diagrams={diagrams} roots={roots} viewer={viewer} images={images} onDone={(r) => (result = r)} />, {
     alternateScreen: true,
   });
@@ -465,6 +518,6 @@ export async function runPicker(diagrams: Diagram[], roots: string[], viewer: Vi
   process.stdin.pause();
   // Restore the terminal even if the effect cleanups did not get to run.
   process.stdout.write(MOUSE_OFF);
-  if (images) process.stdout.write(clearImage());
+  if (images === 'kitty') process.stdout.write(clearImage());
   return result;
 }
