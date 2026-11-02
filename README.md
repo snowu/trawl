@@ -131,6 +131,11 @@ trawl roots remove ~/notes
 ```
 
 They live in `~/.config/trawl/config.json` as `{ "roots": ["~/code", "~/notes"] }` if you prefer editing it.
+Dependency and build folders are never scanned (`node_modules`, `vendor`, `target`, `dist`, `site-packages`, Go's
+`pkg/mod`, dot-folders, ...); skip more with `"ignore": ["worktrees", "~/old-notes"]` (a bare name skips that folder
+name anywhere, a path skips that folder).
+
+`trawl doctor` prints what trawl detects (image support, cell size, fzf, folders): include it in bug reports.
 
 Picker keys:
 

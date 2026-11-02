@@ -7,7 +7,7 @@ import { type Diagram, parseDoc } from './markdown.ts';
 import { findMarkdown } from './scan.ts';
 
 /** Bump when parsing changes, so old indexes are rebuilt instead of serving stale rows. */
-const SCHEMA = 2;
+const SCHEMA = 3;
 
 export const INDEX_PATH =
   process.env.TRAWL_INDEX || join(process.env.XDG_CACHE_HOME || join(homedir(), '.cache'), 'trawl', 'index.db');

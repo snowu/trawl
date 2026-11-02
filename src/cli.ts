@@ -28,6 +28,7 @@ Usage:
   trawl find --plain QUERY...      print matches as path:line  section  snippet (for scripts and agents)
   trawl show FILE[:LINE|#ID]       print the section at LINE / with that heading or diagram id, or the file
   trawl index [--rebuild]          update the search index now and print what it holds
+  trawl doctor                     what trawl detects: terminal images, cell size, fzf, folders
   trawl mcp                        run as an MCP server on stdio (search, read, diagrams, check, render)
 
   trawl site [paths...] -o DIR     build a review site of this repo's docs and diagrams (default dir: trawl-site)
@@ -61,7 +62,7 @@ Options:
   -v, --version        show the version
 `;
 
-const COMMANDS = new Set(['open', 'list', 'check', 'render', 'roots', 'find', 'show', 'index', 'mcp', 'site', 'diff']);
+const COMMANDS = new Set(['doctor', 'open', 'list', 'check', 'render', 'roots', 'find', 'show', 'index', 'mcp', 'site', 'diff']);
 
 /**
  * Folders to scan, as absolute paths. `--all`: the configured roots. Paths given: those. Otherwise
@@ -241,6 +242,32 @@ async function diffCommand(
   return 0;
 }
 
+/** Prints what trawl detects about this terminal and setup, for bug reports about images or folders. */
+async function doctorCommand(): Promise<number> {
+  const { cellMeasured, cellPixels, detectImages } = await import('./kitty.ts');
+  const { getWinsize } = await import('./tty.ts');
+  const before = getWinsize();
+  const images = await detectImages();
+  process.stdin.pause();
+  const fzf = Bun.which('fzf') ? Bun.spawnSync(['fzf', '--version']).stdout.toString().trim() : 'not installed';
+  const env = ['TERM', 'TERM_PROGRAM', 'WT_SESSION', 'TMUX', 'TRAWL_IMAGES', 'TRAWL_CELL']
+    .map((k) => `${k}=${process.env[k] ?? ''}`)
+    .join(' ');
+  const { roots, ignore } = await loadConfig();
+  console.log(
+    [
+      `trawl ${pkg.version} on ${process.platform}`,
+      `images: ${images || 'none (box art)'}`,
+      `cell: ${cellPixels.width}x${cellPixels.height} px (${cellMeasured ? 'measured' : 'guessed: the terminal did not answer CSI 16 t / 14 t'})`,
+      `tty winsize: ${before ? `${before.cols}x${before.rows} cells, ${before.xpixel}x${before.ypixel} px` : 'unreadable'}`,
+      `fzf: ${fzf}`,
+      `env: ${env}`,
+      `folders: ${roots.map(tildePath).join(', ') || 'none'}${ignore?.length ? `; ignoring ${ignore.join(', ')}` : ''}`,
+    ].join('\n'),
+  );
+  return 0;
+}
+
 async function main(): Promise<number> {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
@@ -276,6 +303,7 @@ async function main(): Promise<number> {
   const viewer: Viewer = values.browser ? 'browser' : defaultViewer();
   if (command === 'open') return openCommand(positionals, viewer);
   if (command === 'roots') return rootsCommand(positionals);
+  if (command === 'doctor') return doctorCommand();
   if (command === 'show') return showCommand(positionals, values.color, { preview: values.preview, query: values.query });
   if (command === 'find') return findCommand(positionals.join(' '), values, viewer);
   if (command === 'index') return indexCommand(values.rebuild);

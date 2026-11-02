@@ -190,3 +190,21 @@ describe('Store', () => {
     expect(ftsQuery('  ')).toBe('');
   });
 });
+
+import { plainHeading } from '../src/markdown.ts';
+import { skipDir } from '../src/scan.ts';
+
+test('plainHeading drops badges and markup', () => {
+  expect(plainHeading('asm ![build status](https://x/badge.svg) [![GoDoc](https://g/b.svg)](https://g)')).toBe('asm');
+  expect(plainHeading('The `trawl find` **command** and [docs](./d.md)')).toBe('The trawl find command and docs');
+  expect(plainHeading('<img src="x"> Title')).toBe('Title');
+});
+
+test('skipDir: dot dirs, dependency/build folders, Go module cache', () => {
+  expect(skipDir('/h/go/pkg/mod', 'mod')).toBe(true);
+  expect(skipDir('/h/notes/mod', 'mod')).toBe(false);
+  expect(skipDir('/h/x/site-packages', 'site-packages')).toBe(true);
+  expect(skipDir('/h/x/target', 'target')).toBe(true);
+  expect(skipDir('/h/x/.git', '.git')).toBe(true);
+  expect(skipDir('/h/x/docs', 'docs')).toBe(false);
+});

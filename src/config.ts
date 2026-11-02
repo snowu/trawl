@@ -5,6 +5,8 @@ import { dirname, join, resolve } from 'node:path';
 export interface Config {
   /** Folders bare `trawl` scans; manage them with `trawl roots`. */
   roots: string[];
+  /** Folders to skip: bare names anywhere (`archive`), or paths (`~/old-notes`). */
+  ignore?: string[];
 }
 
 export const CONFIG_PATH = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'trawl', 'config.json');
@@ -18,7 +20,13 @@ export async function saveConfig(config: Config, path = CONFIG_PATH): Promise<vo
   const home = homedir();
   const roots = [...new Set(config.roots)].map((r) => (r === home || r.startsWith(`${home}/`) ? `~${r.slice(home.length)}` : r));
   await mkdir(dirname(path), { recursive: true });
-  await Bun.write(path, `${JSON.stringify({ roots }, null, 2)}\n`);
+  // Keep the rest of the file (ignore, ...): `trawl roots` only manages roots.
+  let rest: Record<string, unknown> = {};
+  try {
+    rest = (await Bun.file(path).json()) as Record<string, unknown>;
+  } catch {}
+  const ignore = config.ignore ?? rest.ignore;
+  await Bun.write(path, `${JSON.stringify({ ...rest, roots, ...(ignore ? { ignore } : {}) }, null, 2)}\n`);
 }
 
 /** Reads the config file; a missing file means no roots. */
@@ -31,5 +39,6 @@ export async function loadConfig(path = CONFIG_PATH): Promise<Config> {
   if (!Array.isArray(roots) || !roots.every((r) => typeof r === 'string')) {
     throw new Error(`${path}: "roots" must be a list of folder paths`);
   }
-  return { roots: roots.map(expandHome) };
+  const ignore = (raw as { ignore?: unknown }).ignore;
+  return { roots: roots.map(expandHome), ignore: Array.isArray(ignore) ? ignore.filter((x): x is string => typeof x === 'string') : undefined };
 }

@@ -48,6 +48,21 @@ const ID_COMMENT = /^\s*%%\s*trawl:id\s+([\w.-]+)\s*$/m;
 const ID_ATTR = /\bid=["']?([\w.-]+)/;
 const LINK = /\]\(([^)\s#]+\.(?:md|mmd))(?:#[^)\s]*)?\)/g;
 
+/**
+ * Heading text without its markdown: images and badges dropped, links reduced to their text, code/emphasis
+ * markers and HTML tags removed. `asm ![build](…) [![x](…)](…)` -> `asm`.
+ */
+export function plainHeading(text: string): string {
+  return text
+    .replace(/\[!\[[^\]]*\]\([^)]*\)\]\([^)]*\)/g, '')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/<[^>]+>/g, '')
+    .replace(/[`*_]{1,3}([^`*_]+)[`*_]{1,3}/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /** `Order Lifecycle (v2)` -> `order-lifecycle-v2` */
 export function slug(text: string): string {
   return (
@@ -147,7 +162,7 @@ export function parseDoc(file: string, text: string): Doc {
     }
     flush();
     const level = h[1].length;
-    const heading = h[2];
+    const heading = plainHeading(h[2]) || h[2];
     if (level === 1) firstH1 ??= heading;
     stack.length = level - 1;
     stack[level - 1] = heading;
@@ -158,7 +173,7 @@ export function parseDoc(file: string, text: string): Doc {
   const links = [...new Set([...text.matchAll(LINK)].map((m) => m[1]).filter((l) => !/^[a-z]+:/i.test(l)))];
   return {
     file,
-    title: frontmatter.title || firstH1 || name.replace(/\.(md|mmd)$/, ''),
+    title: plainHeading(frontmatter.title ?? '') || firstH1 || name.replace(/\.(md|mmd)$/, ''),
     frontmatter,
     sections,
     diagrams: assignIds(raw, explicit),

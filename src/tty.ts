@@ -43,14 +43,23 @@ export function getWinsize(): Winsize | null {
 }
 
 /**
- * Makes sure the winsize record carries a pixel size: keeps one the terminal set, else fills in cols x rows cells of
- * `cell` pixels. True when it now holds one.
+ * Writes cols x rows cells of `cell` pixels into the winsize record, replacing whatever is there: ConPTY can report a
+ * pixel size that doesn't match the real cells, and fzf trusts it. `cell` should be measured (CSI 16 t). True when
+ * the record now holds that size.
  */
-export function ensurePixelSize(cell: { width: number; height: number }): boolean {
+export function setPixelSize(cell: { width: number; height: number }): boolean {
   const consts = IOCTL[process.platform as keyof typeof IOCTL];
   const ws = getWinsize();
-  if (!ws || !consts) return false;
-  if (ws.xpixel > 0 && ws.ypixel > 0) return true;
-  const ok = withTty((fd, ioctl) => ioctl(fd, consts.set, new Uint16Array([ws.rows, ws.cols, ws.cols * cell.width, ws.rows * cell.height])) === 0);
+  if (!ws || !consts || !ws.rows || !ws.cols) return false;
+  const want = { xpixel: ws.cols * cell.width, ypixel: ws.rows * cell.height };
+  if (ws.xpixel === want.xpixel && ws.ypixel === want.ypixel) return true;
+  const ok = withTty((fd, ioctl) => ioctl(fd, consts.set, new Uint16Array([ws.rows, ws.cols, want.xpixel, want.ypixel])) === 0);
   return !!ok;
+}
+
+/** Cell size in pixels as the winsize record has it (what fzf will assume), or null when it doesn't say. */
+export function recordedCell(): { width: number; height: number } | null {
+  const ws = getWinsize();
+  if (!ws || !ws.rows || !ws.cols || !ws.xpixel || !ws.ypixel) return null;
+  return { width: ws.xpixel / ws.cols, height: ws.ypixel / ws.rows };
 }

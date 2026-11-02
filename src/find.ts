@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { detectType, parse } from 'pele';
 import { loadConfig } from './config.ts';
 import { cellMeasured, cellPixels, detectImages } from './kitty.ts';
-import { ensurePixelSize } from './tty.ts';
+import { recordedCell, setPixelSize } from './tty.ts';
 import type { Doc, Section } from './markdown.ts';
 import { ansiArt, asciiArt, svgToRgba, toSvg } from './render.ts';
 import { encodeSixel, scaleCrop } from './sixel.ts';
@@ -100,7 +100,8 @@ function previewImages(env = process.env): PreviewImages | null {
   const mode = env.TRAWL_PREVIEW_IMAGES;
   const cell = /^(\d+)x(\d+)$/.exec(env.TRAWL_CELL ?? '');
   if (mode !== 'sixel' || !cell) return null;
-  return { mode, cell: { width: Number(cell[1]), height: Number(cell[2]) } };
+  // Size by what fzf will assume (it reads the same winsize record), so its line count matches the image.
+  return { mode, cell: recordedCell() ?? { width: Number(cell[1]), height: Number(cell[2]) } };
 }
 
 /** A diagram as an inline image sized to `cols` x at most `maxRows` cells; null when it doesn't parse. */
@@ -167,7 +168,7 @@ export async function showRef(ref: string, color = false, opts: { preview?: bool
   const images = new Map<string, string | null>();
   if (img) {
     for (const m of md.matchAll(MERMAID_FENCE)) {
-      if (!images.has(m[3])) images.set(m[3], await diagramImage(m[3], img, width - 1, Math.max(6, Math.floor(height * 0.6))).catch(() => null));
+      if (!images.has(m[3])) images.set(m[3], await diagramImage(m[3], img, width - 1, Math.max(4, Math.min(Math.floor(height * 0.6), height - 10))).catch(() => null));
     }
   }
   const body = renderTermMd(md, {
@@ -207,7 +208,7 @@ export async function interactiveFind(query: string, roots: string[], viewer: Vi
   const env = { ...process.env } as Record<string, string>;
   // Sixel in fzf's preview only when the cell size is known and fzf can learn the pixel size too (see tty.ts);
   // otherwise box art. Kitty images aren't sized or cleared by fzf's preview, so they get box art as well.
-  if (images === 'sixel' && cellMeasured && ensurePixelSize(cellPixels)) {
+  if (images === 'sixel' && cellMeasured && setPixelSize(cellPixels)) {
     env.TRAWL_PREVIEW_IMAGES = 'sixel';
     env.TRAWL_CELL = `${cellPixels.width}x${cellPixels.height}`;
   } else {
