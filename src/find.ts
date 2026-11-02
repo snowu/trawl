@@ -111,13 +111,13 @@ function previewImages(env = process.env): PreviewImages | null {
   const mode = env.TRAWL_PREVIEW_IMAGES;
   const cell = /^(\d+)x(\d+)$/.exec(env.TRAWL_CELL ?? '');
   if (mode !== 'sixel' || !cell) return null;
-  // fzf sizes images from the winsize record. If it has no pixel size (something reset what interactiveFind wrote),
-  // fzf would show a placeholder box instead of the image: use box art then. Otherwise size by the record, so
-  // fzf's line count matches the image.
+  // fzf sizes images from the winsize record: size by the same record when it's readable, so fzf's line count
+  // matches the image.
   const recorded = recordedCell();
   debugLog(`preview: winsize cell ${recorded ? `${recorded.width}x${recorded.height}` : 'none'}, TRAWL_CELL ${env.TRAWL_CELL}, lines ${env.FZF_PREVIEW_LINES}, cols ${env.FZF_PREVIEW_COLUMNS}`);
-  if (!recorded) return null;
-  return { mode, cell: recorded };
+  // fzf may run previews without a controlling terminal, so the record can be unreadable from here even though
+  // fzf reads it fine. TRAWL_CELL is only passed after interactiveFind wrote exactly that size, so use it then.
+  return { mode, cell: recorded ?? { width: Number(cell[1]), height: Number(cell[2]) } };
 }
 
 /** A diagram as an inline image sized to `cols` x at most `maxRows` cells; null when it doesn't parse. */
