@@ -1,5 +1,6 @@
+import { appendFileSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { detectType, parse } from 'pele';
 import { loadConfig } from './config.ts';
 import { cellMeasured, cellPixels, detectImages } from './kitty.ts';
@@ -90,6 +91,16 @@ export function drawDiagrams(markdown: string, width = Infinity): string {
   return markdown.replace(MERMAID_FENCE, (_block, _indent, _fence, source: string) => drawDiagram(source, width));
 }
 
+/** Appends a line to ~/.cache/trawl/debug.log when TRAWL_DEBUG is set (the preview runs where nothing is seen). */
+function debugLog(line: string): void {
+  if (!process.env.TRAWL_DEBUG) return;
+  const dir = join(process.env.XDG_CACHE_HOME || join(homedir(), '.cache'), 'trawl');
+  try {
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(join(dir, 'debug.log'), `${new Date().toISOString()} ${line}\n`);
+  } catch {}
+}
+
 /** How the fzf preview can show images: set by interactiveFind from what it asked the terminal. */
 interface PreviewImages {
   mode: 'sixel';
@@ -100,8 +111,13 @@ function previewImages(env = process.env): PreviewImages | null {
   const mode = env.TRAWL_PREVIEW_IMAGES;
   const cell = /^(\d+)x(\d+)$/.exec(env.TRAWL_CELL ?? '');
   if (mode !== 'sixel' || !cell) return null;
-  // Size by what fzf will assume (it reads the same winsize record), so its line count matches the image.
-  return { mode, cell: recordedCell() ?? { width: Number(cell[1]), height: Number(cell[2]) } };
+  // fzf sizes images from the winsize record. If it has no pixel size (something reset what interactiveFind wrote),
+  // fzf would show a placeholder box instead of the image: use box art then. Otherwise size by the record, so
+  // fzf's line count matches the image.
+  const recorded = recordedCell();
+  debugLog(`preview: winsize cell ${recorded ? `${recorded.width}x${recorded.height}` : 'none'}, TRAWL_CELL ${env.TRAWL_CELL}, lines ${env.FZF_PREVIEW_LINES}, cols ${env.FZF_PREVIEW_COLUMNS}`);
+  if (!recorded) return null;
+  return { mode, cell: recorded };
 }
 
 /** A diagram as an inline image sized to `cols` x at most `maxRows` cells; null when it doesn't parse. */
@@ -208,7 +224,9 @@ export async function interactiveFind(query: string, roots: string[], viewer: Vi
   const env = { ...process.env } as Record<string, string>;
   // Sixel in fzf's preview only when the cell size is known and fzf can learn the pixel size too (see tty.ts);
   // otherwise box art. Kitty images aren't sized or cleared by fzf's preview, so they get box art as well.
-  if (images === 'sixel' && cellMeasured && setPixelSize(cellPixels)) {
+  const pixels = images === 'sixel' && cellMeasured && setPixelSize(cellPixels);
+  debugLog(`find: images ${images}, cell ${cellPixels.width}x${cellPixels.height} measured ${cellMeasured}, pixel size written ${pixels}`);
+  if (pixels) {
     env.TRAWL_PREVIEW_IMAGES = 'sixel';
     env.TRAWL_CELL = `${cellPixels.width}x${cellPixels.height}`;
   } else {

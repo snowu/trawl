@@ -245,11 +245,22 @@ async function diffCommand(
 
 /** Prints what trawl detects about this terminal and setup, for bug reports about images or folders. */
 async function doctorCommand(): Promise<number> {
-  const { cellMeasured, cellPixels, detectImages } = await import('./kitty.ts');
-  const { getWinsize } = await import('./tty.ts');
+  // The module namespace, not destructured names: cellMeasured is reassigned by detectImages.
+  const kitty = await import('./kitty.ts');
+  const { getWinsize, setPixelSize } = await import('./tty.ts');
   const before = getWinsize();
-  const images = await detectImages();
+  const images = await kitty.detectImages();
   process.stdin.pause();
+  const fmt = (w: ReturnType<typeof getWinsize>) => (w ? `${w.cols}x${w.rows} cells, ${w.xpixel}x${w.ypixel} px` : 'unreadable');
+  // What fzf will see: write the measured pixel size, read it back now and after a moment (something may reset it).
+  let pixelTest = 'skipped (cell size not measured)';
+  if (kitty.cellMeasured) {
+    const wrote = setPixelSize(kitty.cellPixels);
+    const now = getWinsize();
+    await Bun.sleep(500);
+    const later = getWinsize();
+    pixelTest = `${wrote ? 'written' : 'write FAILED'}; reads back ${fmt(now)}, after 0.5s ${fmt(later)}`;
+  }
   const fzf = Bun.which('fzf') ? Bun.spawnSync(['fzf', '--version']).stdout.toString().trim() : 'not installed';
   const env = ['TERM', 'TERM_PROGRAM', 'WT_SESSION', 'TMUX', 'TRAWL_IMAGES', 'TRAWL_CELL']
     .map((k) => `${k}=${process.env[k] ?? ''}`)
@@ -259,8 +270,9 @@ async function doctorCommand(): Promise<number> {
     [
       `trawl ${pkg.version} on ${process.platform}`,
       `images: ${images || 'none (box art)'}`,
-      `cell: ${cellPixels.width}x${cellPixels.height} px (${cellMeasured ? 'measured' : 'guessed: the terminal did not answer CSI 16 t / 14 t'})`,
-      `tty winsize: ${before ? `${before.cols}x${before.rows} cells, ${before.xpixel}x${before.ypixel} px` : 'unreadable'}`,
+      `cell: ${kitty.cellPixels.width}x${kitty.cellPixels.height} px (${kitty.cellMeasured ? 'measured' : 'guessed: the terminal did not answer CSI 16 t / 14 t'})`,
+      `tty winsize: ${fmt(before)}`,
+      `pixel size for fzf: ${pixelTest}`,
       `fzf: ${fzf}`,
       `env: ${env}`,
       `folders: ${roots.map(tildePath).join(', ') || 'none'}${ignore?.length ? `; ignoring ${ignore.join(', ')}` : ''}`,
