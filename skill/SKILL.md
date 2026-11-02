@@ -1,12 +1,34 @@
 ---
 name: trawl
-description: Validate and show Mermaid diagrams with the `trawl` CLI. Use after writing or editing any mermaid block (```mermaid in .md, or .mmd files) to catch syntax errors, when the user asks to see/preview/open a diagram, or to find existing diagrams in a repo. Not for generating images to embed in docs unless asked (use `trawl render` then). Also for sending diagrams to Figma/FigJam or pulling FigJam boards back into the repo as Mermaid.
+description: Search the user's markdown notes and docs across their machine, and validate, render and show Mermaid diagrams, with the `trawl` CLI or its MCP tools. Use when the user refers to something they wrote down ("my notes on X", "the spec for Y", "where did I document Z"), after writing or editing any mermaid block (```mermaid in .md, or .mmd files) to catch syntax errors, when the user asks to see/preview/open a diagram, or to find existing diagrams. Not for generating images to embed in docs unless asked (use `trawl render` then). Also for sending diagrams to Figma/FigJam or pulling FigJam boards back into the repo as Mermaid.
 ---
 
 # trawl
 
-`trawl` finds Mermaid diagrams in `.md` (```mermaid / ~~~mermaid fences) and `.mmd` files, checks their syntax, and
+`trawl` indexes every markdown doc in the user's configured folders (plus the current repo) for full-text search,
+and finds Mermaid diagrams in `.md` (```mermaid / ~~~mermaid fences) and `.mmd` files, checks their syntax, and
 opens them as PNGs in feh (or SVGs in the browser). It renders without a browser, so it is fast and safe to run.
+
+**If the `trawl` MCP tools are connected** (`search`, `read`, `list_diagrams`, `get_diagram`, `check`, `render`,
+`update_diagram`), prefer them to the CLI: same behaviour, and `render` returns the diagram as an image, so look at
+it after writing a diagram to catch layout problems (crossing edges, cramped labels) that `check` can't see.
+
+## Searching the user's docs
+
+```sh
+trawl find --plain WORDS...          # path:line<TAB>section breadcrumb<TAB>snippet, best first; exit 1 if none
+trawl find --plain -i DIR WORDS...   # only under DIR (repeatable)
+trawl show FILE:LINE                 # print that section; FILE#heading-slug also works; FILE alone = whole file
+```
+
+Every word must match (prefix and stem: `refund` finds "refunds"); use 1-3 distinctive words, then `show` the best
+hits. An empty query lists recently edited docs. Never run `trawl find` without `--plain`: it opens fzf.
+
+## Diagram ids
+
+Every diagram has an id, addressable as `FILE#ID`: the nearest heading's slug by default, or an explicit one from
+` ```mermaid id=checkout-flow ` or a `%% trawl:id checkout-flow` line. When you create a diagram others will link to
+or review, give it an explicit id.
 
 ## After writing or editing a diagram: always check it
 
@@ -89,4 +111,5 @@ upload the SVG into the user's Figma file with `upload_assets` (needs that file'
 ## Don't
 
 - Don't run bare `trawl` or `trawl PATH` (no subcommand): it opens an interactive picker meant for humans and will
-  hang without a terminal. Same for `trawl roots pick`.
+  hang without a terminal. Same for `trawl roots pick` and `trawl find` without `--plain`.
+- Don't run `trawl mcp` yourself; it's the MCP server your client starts.

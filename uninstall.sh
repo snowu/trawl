@@ -3,7 +3,7 @@
 #   - the binary (~/.local/bin/trawl)
 #   - config and generated keybind files (~/.config/trawl) and the render cache (~/.cache/trawl)
 #   - the `# >>> trawl >>>` block in ~/.zshrc / ~/.bashrc
-#   - the Claude Code skill (~/.claude/skills/trawl)
+#   - the Claude Code skill (~/.claude/skills/trawl) and the user-scoped `trawl` MCP server registration
 # Lists what it found and asks before deleting anything. Safe to re-run.
 #
 # Flags: --yes (don't ask)
@@ -38,8 +38,11 @@ for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
   [[ -f "$rc" ]] && grep -qxF "$FENCE_OPEN" "$rc" && rcs+=("$rc")
 done
 
+MCP=0
+command -v claude >/dev/null 2>&1 && claude mcp get trawl >/dev/null 2>&1 && MCP=1
+
 printf '%strawl uninstall%s\n' "$BOLD" "$RESET"
-if [[ ${#paths[@]} -eq 0 && ${#rcs[@]} -eq 0 ]]; then
+if [[ ${#paths[@]} -eq 0 && ${#rcs[@]} -eq 0 && "$MCP" -eq 0 ]]; then
   printf '%sNothing to remove: trawl is not installed.%s\n' "$DIM" "$RESET"
   exit 0
 fi
@@ -47,6 +50,7 @@ fi
 printf '%sWill remove:%s\n' "$DIM" "$RESET"
 for p in ${paths[@]+"${paths[@]}"}; do printf '  %s\n' "$p"; done
 for rc in ${rcs[@]+"${rcs[@]}"}; do printf '  the trawl block in %s\n' "$rc"; done
+[[ "$MCP" -eq 1 ]] && printf '  the trawl MCP server in Claude Code (claude mcp remove trawl -s user)\n'
 
 if [[ "$ASSUME_YES" -eq 0 ]]; then
   if [[ ! -t 0 ]]; then
@@ -65,5 +69,7 @@ for rc in ${rcs[@]+"${rcs[@]}"}; do
   # cat (not mv) keeps the rc's permissions and any symlink (dotfile managers) intact.
   cat "$tmp" > "$rc" && rm -f "$tmp"
 done
+
+[[ "$MCP" -eq 1 ]] && { claude mcp remove trawl -s user >/dev/null 2>&1 || true; }
 
 printf '%sDone. Open a new shell to drop the keybinds from this session.%s\n' "$GREEN" "$RESET"

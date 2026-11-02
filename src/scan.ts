@@ -1,49 +1,15 @@
 import { readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
-import { detectType } from 'pele';
+import { type Diagram, parseDoc } from './markdown.ts';
 
-export interface Diagram {
-  /** Absolute path of the file holding the diagram. */
-  file: string;
-  /** 1-based line of the diagram's first source line. */
-  line: number;
-  /** Nearest markdown heading above the fence, or the file name for .mmd files. */
-  title: string;
-  /** Diagram kind as detected by pele (flowchart, sequence, ...), or null when unknown. */
-  type: string | null;
-  source: string;
-}
+export type { Diagram } from './markdown.ts';
 
 export const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', 'vendor', '__pycache__']);
-const FENCE_OPEN = /^\s*(```+|~~~+)\s*mermaid\b/;
-const HEADING = /^#{1,6}\s+(.+?)\s*#*\s*$/;
 
 /** Extracts every mermaid diagram from a markdown or .mmd file's text. */
 export function extract(file: string, text: string): Diagram[] {
-  if (file.endsWith('.mmd')) {
-    const title = file.split('/').pop()!.replace(/\.mmd$/, '');
-    return [{ file, line: 1, title, type: detectType(text), source: text }];
-  }
-
-  const lines = text.split('\n');
-  const diagrams: Diagram[] = [];
-  let heading = file.split('/').pop()!;
-  for (let i = 0; i < lines.length; i++) {
-    const h = HEADING.exec(lines[i]);
-    if (h) heading = h[1];
-    const open = FENCE_OPEN.exec(lines[i]);
-    if (!open) continue;
-
-    const fence = open[1];
-    const start = i + 1;
-    let end = start;
-    while (end < lines.length && !lines[end].trimStart().startsWith(fence)) end++;
-    const source = lines.slice(start, end).join('\n');
-    diagrams.push({ file, line: start + 1, title: heading, type: detectType(source), source });
-    i = end;
-  }
-  return diagrams;
+  return parseDoc(file, text).diagrams;
 }
 
 /** Finds all mermaid diagrams under the given directories (or files), sorted by path and line. */
@@ -68,7 +34,7 @@ export async function scan(paths: string[]): Promise<Diagram[]> {
  * every node_modules first and filters after: 33s vs <1s on a ~/code full of repos), and walks
  * sibling folders in parallel. Symlinked folders are not followed, so link cycles can't loop.
  */
-async function findMarkdown(root: string): Promise<string[]> {
+export async function findMarkdown(root: string): Promise<string[]> {
   const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
   const nested = await Promise.all(
     entries.map((e) => {
