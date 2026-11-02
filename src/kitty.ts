@@ -54,6 +54,8 @@ let cellAspect = 2;
  * small: a sixel image taller than its box scrolls the whole screen, one that's a bit small is harmless.
  */
 export const cellPixels = { width: 8, height: 16 };
+/** Whether cellPixels was measured (terminal reply, or TRAWL_CELL=WxH) rather than guessed. */
+export let cellMeasured = false;
 
 /**
  * Reads the replies to CSI 16 t (cell size), CSI 14 t (text area size, divided by the terminal's columns and
@@ -81,6 +83,12 @@ export function parseTerminalReplies(
  */
 export async function detectImages(env: Record<string, string | undefined> = process.env, timeoutMs = 250): Promise<ImageMode> {
   let mode = imagesSupported(env);
+  const forcedCell = /^(\d+)x(\d+)$/.exec(env.TRAWL_CELL ?? '');
+  if (forcedCell) {
+    Object.assign(cellPixels, { width: Number(forcedCell[1]), height: Number(forcedCell[2]) });
+    cellAspect = cellPixels.height / cellPixels.width;
+    cellMeasured = true;
+  }
   const stdin = process.stdin;
   if (!stdin.isTTY || env.TMUX || env.TRAWL_IMAGES === '0') return mode;
   stdin.setRawMode(true);
@@ -103,9 +111,10 @@ export async function detectImages(env: Record<string, string | undefined> = pro
   // Leave stdin flowing: pausing it lets Bun end the process once Ink takes over (the picker vanished on its own).
   stdin.setRawMode(false);
   const { cell, sixel } = parseTerminalReplies(reply);
-  if (cell) {
+  if (cell && !forcedCell) {
     cellAspect = cell.height / cell.width;
     Object.assign(cellPixels, cell);
+    cellMeasured = true;
   }
   if (!mode && sixel && env.TRAWL_IMAGES === undefined) mode = 'sixel';
   return mode;

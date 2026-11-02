@@ -47,7 +47,7 @@ function asciiPreview(diagram: Diagram): string | null {
 }
 
 /** How the picker closed: 'choose' asks the caller to pick folders with fzf and reopen. */
-export type PickerResult = 'quit' | 'choose' | 'all';
+export type PickerResult = 'quit' | 'choose' | 'all' | 'docs';
 
 type Row = { header: string } | { diagram: Diagram };
 
@@ -89,14 +89,17 @@ interface PickerProps {
   /** Real rendered PNGs in the preview pane (Ghostty, kitty, WezTerm); colored ASCII otherwise. */
   /** How to show real images; true means kitty (kept for callers that only know on/off). */
   images: ImageMode | boolean;
-  onDone: (r: PickerResult) => void;
+  /** Filter text to start with (e.g. the docs view's query on a switch). */
+  initialQuery?: string;
+  /** How the picker closed, and the filter text (carried to the docs view on a switch). */
+  onDone: (r: PickerResult, query: string) => void;
 }
 
-export function Picker({ diagrams, roots, viewer, images: imagesProp, onDone }: PickerProps) {
+export function Picker({ diagrams, roots, viewer, images: imagesProp, initialQuery, onDone }: PickerProps) {
   const images: ImageMode = imagesProp === true ? 'kitty' : imagesProp;
   const { exit } = useApp();
   const { columns, rows } = useWindowSize();
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(initialQuery ?? '');
   const [cursor, setCursor] = useState(0);
   const [marked, setMarked] = useState<Set<Diagram>>(new Set());
   const [panX, setPanX] = useState(0);
@@ -168,7 +171,12 @@ export function Picker({ diagrams, roots, viewer, images: imagesProp, onDone }: 
     if (key.leftArrow || key.rightArrow) return select(folderJump(key.leftArrow ? -1 : 1));
     if (key.ctrl && input === 't') return setShowSource((s) => !s);
     if (key.ctrl && (input === 'f' || input === 'a')) {
-      onDone(input === 'f' ? 'choose' : 'all');
+      onDone(input === 'f' ? 'choose' : 'all', query);
+      return exit();
+    }
+    // Switch to the docs view (the alt+k search), keeping the filter as its query.
+    if ((key.ctrl && input === 's') || (key.meta && input === 'k')) {
+      onDone('docs', query);
       return exit();
     }
     if (key.tab && current) {
@@ -354,6 +362,7 @@ export function Picker({ diagrams, roots, viewer, images: imagesProp, onDone }: 
     ['tab', 'mark'],
     ['ctrl-f', 'subfolders'],
     ['ctrl-a', 'all folders'],
+    ['ctrl-s', 'docs view'],
     ['ctrl-t', showSource ? 'diagram' : 'source'],
     ['ctrl-y', 'copy code'],
     ['←/→', 'folders'],
@@ -502,14 +511,20 @@ export function Picker({ diagrams, roots, viewer, images: imagesProp, onDone }: 
   );
 }
 
-export async function runPicker(diagrams: Diagram[], roots: string[], viewer: Viewer): Promise<PickerResult> {
+export async function runPicker(
+  diagrams: Diagram[],
+  roots: string[],
+  viewer: Viewer,
+  initialQuery = '',
+): Promise<{ result: PickerResult; query: string }> {
   let result: PickerResult = 'quit';
+  let query = '';
   // Alternate screen, like vim/less: often summoned from a keybind, so restore the terminal on exit.
   // Ink switches screens without homing the cursor, so a keybind fired mid-prompt would draw the first
   // row at the prompt's column: enter the alternate screen and home the cursor ourselves first.
   process.stdout.write('\x1b[?1049h\x1b[H');
   const images = await detectImages();
-  const app = render(<Picker diagrams={diagrams} roots={roots} viewer={viewer} images={images} onDone={(r) => (result = r)} />, {
+  const app = render(<Picker diagrams={diagrams} roots={roots} viewer={viewer} images={images} initialQuery={initialQuery} onDone={(r, q) => ((result = r), (query = q))} />, {
     alternateScreen: true,
   });
   await app.waitUntilExit();
@@ -519,5 +534,5 @@ export async function runPicker(diagrams: Diagram[], roots: string[], viewer: Vi
   // Restore the terminal even if the effect cleanups did not get to run.
   process.stdout.write(MOUSE_OFF);
   if (images === 'kitty') process.stdout.write(clearImage());
-  return result;
+  return { result, query };
 }
