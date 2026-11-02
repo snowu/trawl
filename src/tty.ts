@@ -18,12 +18,17 @@ export interface Winsize {
   ypixel: number;
 }
 
+let libc: ReturnType<typeof openLibc> | undefined;
+function openLibc(name: string) {
+  return dlopen(name, { ioctl: { args: [FFIType.i32, FFIType.u64, FFIType.ptr], returns: FFIType.i32 } });
+}
+
 function withTty<T>(fn: (fd: number, ioctl: (fd: number, req: number, buf: Uint16Array) => number) => T): T | null {
   const consts = IOCTL[process.platform as keyof typeof IOCTL];
   if (!consts) return null;
   let fd = -1;
   try {
-    const lib = dlopen(consts.libc, { ioctl: { args: [FFIType.i32, FFIType.u64, FFIType.ptr], returns: FFIType.i32 } });
+    const lib = (libc ??= openLibc(consts.libc));
     fd = openSync('/dev/tty', 'r+');
     return fn(fd, (f, req, buf) => lib.symbols.ioctl(f, req, ptr(buf)));
   } catch {
@@ -62,4 +67,20 @@ export function recordedCell(): { width: number; height: number } | null {
   const ws = getWinsize();
   if (!ws || !ws.rows || !ws.cols || !ws.xpixel || !ws.ypixel) return null;
   return { width: ws.xpixel / ws.cols, height: ws.ypixel / ws.rows };
+}
+
+/**
+ * Keeps the pixel size in the winsize record while a child (fzf) runs: something (WSL's ConPTY bridge, a terminal
+ * resize) can reset it to 0, and fzf then draws placeholder boxes for images. Rewriting it also makes the kernel send
+ * SIGWINCH, so fzf reads the size again and redraws. Returns a stop function.
+ */
+export function keepPixelSize(cell: { width: number; height: number }, onFix?: (from: Winsize) => void, everyMs = 250): () => void {
+  const timer = setInterval(() => {
+    const ws = getWinsize();
+    if (!ws || !ws.rows || !ws.cols) return;
+    if (ws.xpixel === ws.cols * cell.width && ws.ypixel === ws.rows * cell.height) return;
+    onFix?.(ws);
+    setPixelSize(cell);
+  }, everyMs);
+  return () => clearInterval(timer);
 }

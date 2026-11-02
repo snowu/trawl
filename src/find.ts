@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import { detectType, parse } from 'pele';
 import { loadConfig } from './config.ts';
 import { cellMeasured, cellPixels, detectImages } from './kitty.ts';
-import { recordedCell, setPixelSize } from './tty.ts';
+import { keepPixelSize, recordedCell, setPixelSize } from './tty.ts';
 import type { Doc, Section } from './markdown.ts';
 import { ansiArt, asciiArt, svgToRgba, toSvg } from './render.ts';
 import { encodeSixel, scaleCrop } from './sixel.ts';
@@ -272,8 +272,12 @@ export async function interactiveFind(query: string, roots: string[], viewer: Vi
     ],
     { stdin: 'ignore', stdout: 'pipe', stderr: 'inherit', env },
   );
+  const stopKeeping = pixels
+    ? keepPixelSize(cellPixels, (ws) => debugLog(`find: pixel size was reset to ${ws.xpixel}x${ws.ypixel} for ${ws.cols}x${ws.rows} cells; rewrote it`))
+    : () => {};
   const out = await new Response(fzf.stdout).text();
   await fzf.exited;
+  stopKeeping();
   const [typed = '', key = '', line] = out.split('\n');
   if (key === 'ctrl-s' || key === 'alt-m') return { kind: 'diagrams', query: typed };
   if (!line) return { kind: 'quit', code: 0 };
