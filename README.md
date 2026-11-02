@@ -100,7 +100,8 @@ trawl index                # update the index now and print what it holds (--reb
 
 `find` searches your configured folders plus the repo you're in. Every word must match (prefixes and plurals
 count: `refund` finds "refunds"); headings weigh more than body text. An empty query lists recently edited docs.
-In the fzf view the preview renders the section (with its subsections) for the terminal, highlights what you typed
+The fzf view lists sections with text of their own: diagram-only sections and `.mmd` files are left to the diagram
+view (`--plain`, used by scripts and agents, still includes them; `--prose` leaves them out there too). The preview renders the section (with its subsections) for the terminal, highlights what you typed
 and draws its diagrams: as images in sixel terminals (Windows Terminal, foot, ...), else as box art. Keys: enter opens
 the section in `$VISUAL`/`$EDITOR`, ctrl-o opens the diagrams in that section, ctrl-/ widens the preview, ctrl-y
 copies `path:line`, and **ctrl-s** (or alt+m) switches to the diagram picker over the same folders, keeping what you

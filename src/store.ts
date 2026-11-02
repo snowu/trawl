@@ -7,7 +7,7 @@ import { type Diagram, parseDoc } from './markdown.ts';
 import { findMarkdown } from './scan.ts';
 
 /** Bump when parsing changes, so old indexes are rebuilt instead of serving stale rows. */
-const SCHEMA = 3;
+const SCHEMA = 4;
 
 export const INDEX_PATH =
   process.env.TRAWL_INDEX || join(process.env.XDG_CACHE_HOME || join(homedir(), '.cache'), 'trawl', 'index.db');
@@ -27,6 +27,12 @@ export interface RefreshStats {
   files: number;
   updated: number;
   removed: number;
+}
+
+/** Whether a section has text of its own beyond Mermaid diagrams (.mmd files never do). */
+export function hasProse(path: string, body: string): boolean {
+  if (path.endsWith('.mmd')) return false;
+  return /\S/.test(body.replace(/^[ \t]*(```+|~~~+)[ \t]*mermaid\b[\s\S]*?^[ \t]*\1[ \t]*$/gm, ''));
 }
 
 /** True when `path` is `root` or inside it. */
@@ -65,7 +71,7 @@ export class Store {
     this.db.run('DROP TABLE IF EXISTS sections_fts');
     this.db.run('DROP TABLE IF EXISTS diagrams');
     this.db.run('CREATE TABLE files (path TEXT PRIMARY KEY, mtime REAL, size INTEGER, title TEXT, frontmatter TEXT, links TEXT)');
-    this.db.run('CREATE TABLE sections (id INTEGER PRIMARY KEY, path TEXT, line INTEGER, level INTEGER, heading TEXT, crumb TEXT, body TEXT)');
+    this.db.run('CREATE TABLE sections (id INTEGER PRIMARY KEY, path TEXT, line INTEGER, level INTEGER, heading TEXT, crumb TEXT, body TEXT, prose INTEGER)');
     this.db.run('CREATE INDEX sections_path ON sections(path)');
     this.db.run("CREATE VIRTUAL TABLE sections_fts USING fts5(heading, crumb, body, tokenize='porter unicode61')");
     this.db.run('CREATE TABLE diagrams (path TEXT, line INTEGER, id TEXT, explicit INTEGER, title TEXT, type TEXT, source TEXT)');
@@ -97,10 +103,10 @@ export class Store {
       JSON.stringify(doc.frontmatter),
       JSON.stringify(doc.links),
     ]);
-    const sec = this.db.prepare('INSERT INTO sections (path, line, level, heading, crumb, body) VALUES (?, ?, ?, ?, ?, ?) RETURNING id');
+    const sec = this.db.prepare('INSERT INTO sections (path, line, level, heading, crumb, body, prose) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id');
     const fts = this.db.prepare('INSERT INTO sections_fts (rowid, heading, crumb, body) VALUES (?, ?, ?, ?)');
     for (const s of doc.sections) {
-      const { id } = sec.get(path, s.line, s.level, s.heading, s.crumb, s.body) as { id: number };
+      const { id } = sec.get(path, s.line, s.level, s.heading, s.crumb, s.body, hasProse(path, s.body) ? 1 : 0) as { id: number };
       fts.run(id, s.heading, s.crumb, s.body);
     }
     const dia = this.db.prepare('INSERT INTO diagrams VALUES (?, ?, ?, ?, ?, ?, ?)');
@@ -145,7 +151,11 @@ export class Store {
   }
 
   /** Full-text search over section headings and text, best matches first. Headings weigh most. */
-  search(query: string, opts: { roots?: string[]; limit?: number; mark?: [string, string] } = {}): Hit[] {
+  /**
+   * `proseOnly` leaves out sections that are nothing but diagrams (and .mmd files): the docs view's choice, since
+   * the diagram view covers those.
+   */
+  search(query: string, opts: { roots?: string[]; limit?: number; mark?: [string, string]; proseOnly?: boolean } = {}): Hit[] {
     const match = ftsQuery(query);
     if (!match) return [];
     const [open, close] = opts.mark ?? ['«', '»'];
@@ -157,7 +167,7 @@ export class Store {
         `SELECT s.path AS file, s.line, s.level, s.heading, s.crumb, f.title AS docTitle,
                 snippet(sections_fts, 2, ?, ?, '…', 12) AS snippet
          FROM sections_fts JOIN sections s ON s.id = sections_fts.rowid JOIN files f ON f.path = s.path
-         WHERE sections_fts MATCH ? ${where}
+         WHERE sections_fts MATCH ? ${opts.proseOnly ? 'AND s.prose = 1' : ''} ${where}
          ORDER BY bm25(sections_fts, 8.0, 3.0, 1.0)
          LIMIT ?`,
       )
@@ -166,9 +176,17 @@ export class Store {
   }
 
   /** Most recently modified documents under these roots, as hits on their first section. */
-  recent(opts: { roots?: string[]; limit?: number } = {}): Hit[] {
+  recent(opts: { roots?: string[]; limit?: number; proseOnly?: boolean } = {}): Hit[] {
     const abs = (opts.roots ?? []).map((r) => resolve(r));
-    const files = (this.db.query('SELECT path, title FROM files ORDER BY mtime DESC').all() as { path: string; title: string }[])
+    const files = (
+      this.db
+        .query(
+          opts.proseOnly
+            ? 'SELECT path, title FROM files f WHERE EXISTS (SELECT 1 FROM sections s WHERE s.path = f.path AND s.prose = 1) ORDER BY mtime DESC'
+            : 'SELECT path, title FROM files ORDER BY mtime DESC',
+        )
+        .all() as { path: string; title: string }[]
+    )
       .filter((f) => !abs.length || abs.some((root) => within(f.path, root)))
       .slice(0, opts.limit ?? 50);
     const first = this.db.prepare('SELECT line, level, heading, crumb, body FROM sections WHERE path = ? ORDER BY line LIMIT 1');

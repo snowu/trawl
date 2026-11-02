@@ -47,8 +47,8 @@ export function formatHit(hit: Hit, color = false): string {
 }
 
 /** Search results, or the most recently edited docs for an empty query. */
-export function lookup(store: Store, query: string, roots: string[], limit = 50): Hit[] {
-  return query.trim() ? store.search(query, { roots, limit }) : store.recent({ roots, limit });
+export function lookup(store: Store, query: string, roots: string[], limit = 50, proseOnly = false): Hit[] {
+  return query.trim() ? store.search(query, { roots, limit, proseOnly }) : store.recent({ roots, limit, proseOnly });
 }
 
 const MERMAID_FENCE = /^([ \t]*)(```+|~~~+)[ \t]*mermaid\b[^\n]*\n([\s\S]*?)\n[ \t]*\2[ \t]*$/gm;
@@ -200,7 +200,7 @@ export type FindResult = { kind: 'quit'; code: number } | { kind: 'diagrams'; qu
 export async function interactiveFind(query: string, roots: string[], viewer: Viewer): Promise<FindResult> {
   const self = selfCommand();
   const scope = roots.map((r) => `--in '${r.replaceAll("'", `'\\''`)}'`).join(' ');
-  const reload = `${self} find --plain --color --no-refresh ${scope} -- {q} || true`;
+  const reload = `${self} find --plain --color --prose --no-refresh ${scope} -- {q} || true`;
   // Ask the terminal now (fzf's preview commands have no terminal to ask) and hand the answer down via env.
   const images = await detectImages();
   // detectImages leaves stdin flowing (the Ink picker needs that); here fzf reads the keyboard, so stop reading it.

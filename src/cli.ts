@@ -52,6 +52,7 @@ Options:
   -i, --in DIR         find: search only this folder (repeatable)
       --plain          find: print results instead of opening fzf
       --limit N        find: at most N results (default 50)
+      --prose          find: leave out sections that are only diagrams (the docs view does)
       --repo OWNER/NAME  site: GitHub repo for links and change requests (default: from git remote)
       --branch NAME    site: branch for "View on GitHub" links (default: current)
       --name NAME      site: title (default: the folder name)
@@ -156,7 +157,7 @@ async function showCommand(refs: string[], color = false, opts: { preview?: bool
 /** `trawl find`: refresh the index for the scope, then fzf (interactive) or print matches. */
 async function findCommand(
   query: string,
-  opts: { in?: string[]; plain?: boolean; color?: boolean; 'no-refresh'?: boolean; limit?: string },
+  opts: { in?: string[]; plain?: boolean; color?: boolean; prose?: boolean; 'no-refresh'?: boolean; limit?: string },
   viewer: Viewer,
 ): Promise<number> {
   const roots = opts.in?.length ? opts.in.map((p) => resolve(p)) : await searchRoots();
@@ -168,7 +169,7 @@ async function findCommand(
       store.close();
       return runViews('docs', roots, query, viewer);
     }
-    const hits = lookup(store, query, roots, Number(opts.limit) || 50);
+    const hits = lookup(store, query, roots, Number(opts.limit) || 50, opts.prose);
     for (const h of hits) console.log(formatHit(h, opts.color));
     return hits.length || !query.trim() ? 0 : 1;
   } finally {
@@ -282,6 +283,7 @@ async function main(): Promise<number> {
       plain: { type: 'boolean' },
       color: { type: 'boolean' },
       preview: { type: 'boolean' },
+      prose: { type: 'boolean' },
       query: { type: 'string' },
       'no-refresh': { type: 'boolean' },
       rebuild: { type: 'boolean' },

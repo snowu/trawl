@@ -208,3 +208,25 @@ test('skipDir: dot dirs, dependency/build folders, Go module cache', () => {
   expect(skipDir('/h/x/.git', '.git')).toBe(true);
   expect(skipDir('/h/x/docs', 'docs')).toBe(false);
 });
+
+import { hasProse } from '../src/store.ts';
+
+test('hasProse: text beyond diagrams; .mmd never', () => {
+  expect(hasProse('/a.md', '```mermaid\nflowchart LR\n  a-->b\n```\n')).toBe(false);
+  expect(hasProse('/a.md', '```mermaid\nflowchart LR\n  a-->b\n```\n\nWhy it works.')).toBe(true);
+  expect(hasProse('/a.md', '```ts\nconst x = 1;\n```')).toBe(true);
+  expect(hasProse('/a.mmd', 'flowchart LR\n  a-->b')).toBe(false);
+});
+
+test('Store.search proseOnly drops diagram-only sections', async () => {
+  const store = new Store(':memory:');
+  const dir = await mkdtemp(join(tmpdir(), 'trawl-prose-'));
+  await writeFile(join(dir, 'a.md'), '# Refunds\n\n## Refund flow\n\n```mermaid\nflowchart LR\n  a-->b\n```\n\n## Refund policy\n\nRefunds within 30 days.\n');
+  await writeFile(join(dir, 'b.mmd'), '%% refund states\nstateDiagram-v2\n  [*] --> Done');
+  await store.refresh([dir]);
+  expect(store.search('refund').map((h) => h.heading).sort()).toEqual(['Refund flow', 'Refund policy', 'Refunds', 'b'].sort());
+  expect(store.search('refund', { proseOnly: true }).map((h) => h.heading)).toEqual(['Refund policy']);
+  expect(store.recent({ proseOnly: true }).map((h) => h.docTitle)).toEqual(['Refunds']);
+  store.close();
+  await rm(dir, { recursive: true, force: true });
+});
