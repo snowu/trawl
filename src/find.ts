@@ -3,11 +3,11 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { detectType, parse } from 'pele';
 import { loadConfig } from './config.ts';
-import { cellMeasured, cellPixels, detectImages } from './kitty.ts';
+import { cellMeasured, cellPixels, detectImages, terminalBackground } from './kitty.ts';
 import { keepPixelSize, recordedCell, setPixelSize } from './tty.ts';
 import type { Doc, Section } from './markdown.ts';
 import { ansiArt, asciiArt, svgToRgba, toSvg } from './render.ts';
-import { encodeSixel, scaleCrop } from './sixel.ts';
+import { encodeSixel, padTo, scaleCrop } from './sixel.ts';
 import { renderTermMd } from './term-md.ts';
 import { openDiagrams, type Viewer } from './open.ts';
 import { findSection, loadDoc, parseRef, sectionText } from './refs.ts';
@@ -105,6 +105,8 @@ function debugLog(line: string): void {
 interface PreviewImages {
   mode: 'sixel';
   cell: { width: number; height: number };
+  /** Terminal background, for padding images to the pane width. */
+  bg: [number, number, number] | null;
 }
 
 function previewImages(env = process.env): PreviewImages | null {
@@ -117,11 +119,20 @@ function previewImages(env = process.env): PreviewImages | null {
   debugLog(`preview: winsize cell ${recorded ? `${recorded.width}x${recorded.height}` : 'none'}, TRAWL_CELL ${env.TRAWL_CELL}, lines ${env.FZF_PREVIEW_LINES}, cols ${env.FZF_PREVIEW_COLUMNS}`);
   // fzf may run previews without a controlling terminal, so the record can be unreadable from here even though
   // fzf reads it fine. TRAWL_CELL is only passed after interactiveFind wrote exactly that size, so use it then.
-  return { mode, cell: recorded ?? { width: Number(cell[1]), height: Number(cell[2]) } };
+  const bg = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(env.TRAWL_BG ?? '');
+  return {
+    mode,
+    cell: recorded ?? { width: Number(cell[1]), height: Number(cell[2]) },
+    bg: bg ? [parseInt(bg[1], 16), parseInt(bg[2], 16), parseInt(bg[3], 16)] : null,
+  };
 }
 
-/** A diagram as an inline image sized to `cols` x at most `maxRows` cells; null when it doesn't parse. */
-async function diagramImage(source: string, img: PreviewImages, cols: number, maxRows: number): Promise<string | null> {
+/**
+ * A diagram as a sixel image at most `cols` x `maxRows` cells, padded to the full `cols` width with the terminal's
+ * background: fzf only clears an image's first line, so a narrower image would leave the previous one showing beside
+ * it. Returns the image and the lines it covers; null when it doesn't parse.
+ */
+async function diagramImage(source: string, img: PreviewImages, cols: number, maxRows: number): Promise<{ sixel: string; rows: number } | null> {
   if (parseProblem(source)) return null;
   const rgba = await svgToRgba(toSvg(source));
   // Fit by pixels: the full width unless that's too tall; never upscale past the 2x render.
@@ -132,7 +143,15 @@ async function diagramImage(source: string, img: PreviewImages, cols: number, ma
     h = maxH;
     w = Math.round((h * rgba.width) / rgba.height);
   }
-  return encodeSixel(scaleCrop(rgba, { zoom: 1, x: 0, y: 0 }, Math.max(1, w), Math.max(1, h)));
+  const pixels = scaleCrop(rgba, { zoom: 1, x: 0, y: 0 }, Math.max(1, w), Math.max(1, h));
+  const rows = Math.ceil(h / img.cell.height);
+  const canvas = img.bg ? padTo(pixels, cols * img.cell.width, h, img.bg) : pixels;
+  return { sixel: encodeSixel(canvas), rows };
+}
+
+/** Lines `text` takes in a pane `width` columns wide that wraps (ANSI codes take no room). */
+function visualLines(text: string, width: number): number {
+  return text.split('\n').reduce((n, line) => n + Math.max(1, Math.ceil([...line.replace(/\x1b\[[0-9;]*m/g, '')].length / width)), 0);
 }
 
 const PREVIEW_MAX_LINES = 120;
@@ -181,20 +200,43 @@ export async function showRef(ref: string, color = false, opts: { preview?: bool
   }
 
   const img = previewImages();
-  const images = new Map<string, string | null>();
-  if (img) {
-    for (const m of md.matchAll(MERMAID_FENCE)) {
-      if (!images.has(m[3])) images.set(m[3], await diagramImage(m[3], img, width - 1, Math.max(4, Math.min(Math.floor(height * 0.6), height - 10))).catch(() => null));
-    }
-  }
-  const body = renderTermMd(md, {
+  // First pass: text with a marker line where each diagram goes, so we know where each one lands.
+  const sources: string[] = [];
+  const marked = renderTermMd(md, {
     query: opts.query,
     diagram: (source) => {
-      const image = images.get(source);
-      if (!image) return drawDiagram(source, width);
-      return `${ANSI.dim}◆ ${detectType(source) ?? 'diagram'} · ctrl-o opens it${ANSI.reset}\n${image}`;
+      sources.push(source);
+      return `${ANSI.dim}◆ ${detectType(source) ?? 'diagram'} · ctrl-o opens it${ANSI.reset}\n\u0001${sources.length - 1}\u0001`;
     },
   });
+  // Second pass: each image gets the rows left below it (fzf shows an image only if it fits whole), at most 60% of
+  // the pane so text around it stays in view; one that starts too low gets the 60% and shows once scrolled to.
+  const cap = Math.max(4, Math.floor(height * 0.6));
+  const out: string[] = [];
+  let y = 1; // the location line above the body
+  for (const line of marked.split('\n')) {
+    const token = /^\u0001(\d+)\u0001$/.exec(line);
+    if (!token) {
+      out.push(line);
+      y += visualLines(line, width);
+      continue;
+    }
+    const source = sources[Number(token[1])];
+    const left = height - y - 1;
+    const image = img ? await diagramImage(source, img, width - 1, left >= 6 ? Math.min(cap, left) : cap).catch(() => null) : null;
+    if (image) {
+      out.push(image.sixel);
+      y += image.rows;
+    } else {
+      // Box art (or a note and the source) instead; drop the ◆ line already written, drawDiagram has its own.
+      out.pop();
+      y -= 1;
+      const drawn = drawDiagram(source, width);
+      out.push(drawn);
+      y += visualLines(drawn, width);
+    }
+  }
+  const body = out.join('\n');
   const where = `${ANSI.dim}${displayPath(doc.file)}:${section?.line ?? 1}${ANSI.reset}`;
   return `${where}\n${body}${more}`;
 }
@@ -227,6 +269,7 @@ export async function interactiveFind(query: string, roots: string[], viewer: Vi
   const pixels = images === 'sixel' && cellMeasured && setPixelSize(cellPixels);
   debugLog(`find: images ${images}, cell ${cellPixels.width}x${cellPixels.height} measured ${cellMeasured}, pixel size written ${pixels}`);
   if (pixels) {
+    if (terminalBackground) env.TRAWL_BG = `#${terminalBackground.map((c) => c.toString(16).padStart(2, '0')).join('')}`;
     env.TRAWL_PREVIEW_IMAGES = 'sixel';
     env.TRAWL_CELL = `${cellPixels.width}x${cellPixels.height}`;
   } else {

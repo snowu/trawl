@@ -54,6 +54,16 @@ let cellAspect = 2;
  * small: a sixel image taller than its box scrolls the whole screen, one that's a bit small is harmless.
  */
 export const cellPixels = { width: 8, height: 16 };
+/** The terminal's background color (OSC 11), to pad images with so they paint over old ones; null when unknown. */
+export let terminalBackground: [number, number, number] | null = null;
+
+/** `ESC ] 11 ; rgb:RRRR/GGGG/BBBB` (1-4 hex digits per channel) -> [r, g, b] in 0..255. */
+export function parseBackground(reply: string): [number, number, number] | null {
+  const m = /\x1b\]11;rgb:([0-9a-f]{1,4})\/([0-9a-f]{1,4})\/([0-9a-f]{1,4})/i.exec(reply);
+  if (!m) return null;
+  return [m[1], m[2], m[3]].map((h) => Math.round((parseInt(h, 16) / (16 ** h.length - 1)) * 255)) as [number, number, number];
+}
+
 /** Whether cellPixels was measured (terminal reply, or TRAWL_CELL=WxH) rather than guessed. */
 export let cellMeasured = false;
 
@@ -106,11 +116,12 @@ export async function detectImages(env: Record<string, string | undefined> = pro
     };
     const timer = setTimeout(done, timeoutMs);
     stdin.on('data', onData);
-    process.stdout.write('\x1b[16t\x1b[14t\x1b[c');
+    process.stdout.write('\x1b[16t\x1b[14t\x1b]11;?\x1b\\\x1b[c');
   });
   // Leave stdin flowing: pausing it lets Bun end the process once Ink takes over (the picker vanished on its own).
   stdin.setRawMode(false);
   const { cell, sixel } = parseTerminalReplies(reply);
+  terminalBackground = parseBackground(reply) ?? terminalBackground;
   if (cell && !forcedCell) {
     cellAspect = cell.height / cell.width;
     Object.assign(cellPixels, cell);

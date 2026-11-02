@@ -79,3 +79,10 @@ describe('viewport', () => {
     ]);
   });
 });
+
+import { parseBackground } from '../src/kitty.ts';
+test('parseBackground reads OSC 11 replies in any digit width', () => {
+  expect(parseBackground('\x1b]11;rgb:0c0c/0c0c/0c0c\x1b\\')).toEqual([12, 12, 12]);
+  expect(parseBackground('\x1b]11;rgb:ff/80/00\x07')).toEqual([255, 128, 0]);
+  expect(parseBackground('nope')).toBeNull();
+});

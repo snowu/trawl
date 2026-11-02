@@ -145,6 +145,8 @@ async function openCommand(args: string[], viewer: Viewer): Promise<number> {
 }
 
 async function showCommand(refs: string[], color = false, opts: { preview?: boolean; query?: string } = {}): Promise<number> {
+  // fzf runs the preview even with no results, with an empty {1}: show nothing rather than an error.
+  if (opts.preview && refs.every((r) => !r.trim())) return 0;
   if (!refs.length) {
     console.error('trawl: show needs FILE[:LINE|#ID]');
     return 2;

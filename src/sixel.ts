@@ -129,3 +129,12 @@ export function encodeSixel(img: Rgba): string {
   parts.push('\x1b\\');
   return parts.join('');
 }
+
+/** `img` drawn at the top-left of a `width` x `height` canvas filled with `bg`. */
+export function padTo(img: Rgba, width: number, height: number, bg: [number, number, number]): Rgba {
+  const data = new Uint8Array(width * height * 4);
+  for (let i = 0; i < data.length; i += 4) (data[i] = bg[0]), (data[i + 1] = bg[1]), (data[i + 2] = bg[2]), (data[i + 3] = 255);
+  const w = Math.min(width, img.width);
+  for (let y = 0; y < Math.min(height, img.height); y++) data.set(img.data.subarray(y * img.width * 4, (y * img.width + w) * 4), y * width * 4);
+  return { width, height, data };
+}
