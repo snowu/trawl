@@ -3,7 +3,7 @@ import { readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { expandHome } from './config.ts';
-import { SKIP_DIRS, tildePath } from './scan.ts';
+import { skipDir, tildePath } from './scan.ts';
 
 const MAX_DEPTH = 3;
 
@@ -15,7 +15,7 @@ export async function listFolders(roots: string[], maxDepth = MAX_DEPTH): Promis
     if (depth === maxDepth) return;
     const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
     for (const e of entries) {
-      if (e.isDirectory() && !e.name.startsWith('.') && !SKIP_DIRS.has(e.name)) await walk(join(dir, e.name), depth + 1);
+      if (e.isDirectory() && !skipDir(join(dir, e.name), e.name)) await walk(join(dir, e.name), depth + 1);
     }
   };
   for (const root of roots) await walk(root, 0);

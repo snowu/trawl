@@ -11,10 +11,12 @@ through an MCP server: search and read your docs, check, render (as images they 
 - Renders without a browser or Chromium: [pele](https://github.com/obsidianmd/pele) draws the SVG,
   [resvg](https://github.com/linebender/resvg) rasterizes it with a bundled Inter font, so PNGs look the same on every
   machine.
-- Previews the real rendered diagram inside the picker in terminals that support inline images (Ghostty, kitty,
-  WezTerm). Elsewhere (Alacritty, tmux, ...) it falls back to colored box-drawing art
+- Previews the real rendered diagram inside the picker in terminals that support inline images: the kitty protocol
+  (Ghostty, kitty, WezTerm) or sixel (Windows Terminal 1.22+, foot, Konsole, xterm -ti vt340, ...; detected by
+  asking the terminal). Elsewhere (Alacritty, tmux, ...) it falls back to colored box-drawing art
   ([beautiful-mermaid](https://github.com/lukilabs/beautiful-mermaid): flowchart, sequence, state, class, ER and XY
-  charts; other types show their source). `TRAWL_IMAGES=0` or `=1` overrides the detection.
+  charts; other types show their source). `TRAWL_IMAGES=0`, `=kitty` or `=sixel` overrides the detection, and `TRAWL_CELL=9x18` the measured cell size in
+pixels if images come out the wrong size.
 - `trawl check` doubles as a Mermaid linter for CI.
 - `trawl find` (alt+k) searches every doc and section in your folders and the repo you're in: live results in fzf,
   the matching section as preview, enter opens it in `$EDITOR` at that line. A full-text index (SQLite) is updated
@@ -98,8 +100,12 @@ trawl index                # update the index now and print what it holds (--reb
 
 `find` searches your configured folders plus the repo you're in. Every word must match (prefixes and plurals
 count: `refund` finds "refunds"); headings weigh more than body text. An empty query lists recently edited docs.
-In the fzf view: enter opens the section in `$VISUAL`/`$EDITOR`, ctrl-o opens the diagrams in that section,
-ctrl-y copies `path:line`.
+The fzf view lists sections with text of their own: diagram-only sections and `.mmd` files are left to the diagram
+view (`--plain`, used by scripts and agents, still includes them; `--prose` leaves them out there too). The preview renders the section (with its subsections) for the terminal, highlights what you typed
+and draws its diagrams: as images in sixel terminals (Windows Terminal, foot, ...), else as box art. Keys: enter opens
+the section in `$VISUAL`/`$EDITOR`, ctrl-o opens the diagrams in that section, ctrl-/ widens the preview, ctrl-y
+copies `path:line`, and **ctrl-s** (or alt+m) switches to the diagram picker over the same folders, keeping what you
+typed. In the picker, ctrl-s (or alt+k) switches back.
 
 ### Diagram ids
 
@@ -126,6 +132,11 @@ trawl roots remove ~/notes
 ```
 
 They live in `~/.config/trawl/config.json` as `{ "roots": ["~/code", "~/notes"] }` if you prefer editing it.
+Dependency and build folders are never scanned (`node_modules`, `vendor`, `target`, `dist`, `site-packages`, Go's
+`pkg/mod`, dot-folders, ...); skip more with `"ignore": ["worktrees", "~/old-notes"]` (a bare name skips that folder
+name anywhere, a path skips that folder).
+
+`trawl doctor` prints what trawl detects (image support, cell size, fzf, folders): include it in bug reports.
 
 Picker keys:
 
@@ -141,6 +152,7 @@ Picker keys:
 | ←/→ | previous / next folder |
 | shift ←/→ | pan a wide text preview |
 | mouse | click a row to select it, wheel over the list to move; over an image: wheel zooms, drag pans, right-click resets |
+| ctrl-s, alt+k | switch to the docs view (search), keeping the filter |
 | ctrl-t | toggle preview between diagram and source |
 | ctrl-y | copy the mermaid source (marked: all of them, as fenced blocks) |
 | esc | clear the filter, or quit |

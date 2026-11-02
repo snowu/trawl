@@ -66,6 +66,23 @@ export async function svgToPng(svg: string): Promise<Uint8Array> {
   }
 }
 
+/** Rasterizes an SVG at 2x like svgToPng, as raw RGBA pixels (for sixel, which can't take a PNG). */
+export async function svgToRgba(svg: string): Promise<{ width: number; height: number; data: Uint8Array }> {
+  const fontBuffers = await loadRasterizer();
+  const resvg = new Resvg(inlineCssVars(svg), {
+    background: '#fff',
+    fitTo: { mode: 'zoom', value: 2 },
+    font: { fontBuffers, defaultFontFamily: FONT, sansSerifFamily: FONT, loadSystemFonts: false },
+  });
+  const image = resvg.render();
+  try {
+    return { width: image.width, height: image.height, data: new Uint8Array(image.pixels) };
+  } finally {
+    image.free();
+    resvg.free();
+  }
+}
+
 /** Writes the diagram's SVG or PNG to the cache (keyed by source hash) and returns its path. */
 export async function renderToCache(source: string, format: 'svg' | 'png'): Promise<string> {
   const hash = new Bun.CryptoHasher('sha1').update(`${pkg.version}\0${source}`).digest('hex').slice(0, 16);
@@ -88,4 +105,46 @@ export function toAscii(source: string): string {
     paddingX: 3,
     paddingY: 2,
   });
+}
+
+type Run = { text: string; kind: 'line' | 'arrow' | 'text' };
+// Box drawing, the corner glyphs used for some node shapes, and diamonds; then arrowheads.
+const LINE_CHARS = /[\u2500-\u257f\u2308-\u230f\u231c-\u231f\u25c6\u25c7]/;
+const ARROW_CHARS = /[\u25b2\u25b6\u25b8\u25ba\u25bc\u25c0\u25c2\u25c4\u2190-\u2193]/;
+
+/**
+ * Splits a plain ASCII-art line into runs of box lines, arrowheads and label text, so previews can color
+ * them themselves (the library's ANSI themes assume a light background and break truncation and panning).
+ */
+export function colorRuns(line: string): Run[] {
+  const runs: Run[] = [];
+  for (const ch of line) {
+    const kind = ARROW_CHARS.test(ch) ? 'arrow' : LINE_CHARS.test(ch) ? 'line' : 'text';
+    const last = runs.at(-1);
+    if (last?.kind === kind) last.text += ch;
+    else runs.push({ text: ch, kind });
+  }
+  return runs;
+}
+
+/** Cleaned-up box-drawing art for a diagram, or null when beautiful-mermaid can't draw its type. */
+export function asciiArt(source: string): string | null {
+  try {
+    // Subgraph boxes carry a `rect [rgb(...)]` caption from the source's styling: draw it as plain border.
+    // HTML in labels (<b>, <br/>) is blanked to spaces of the same width so the boxes stay aligned.
+    return toAscii(source)
+      .replace(/rect \[rgb\([^)]*\)\]/g, (m) => '─'.repeat(m.length))
+      .replace(/<\/?[a-z]+\s*\/?>/gi, (m) => ' '.repeat(m.length));
+  } catch {
+    return null;
+  }
+}
+
+/** Art with box lines gray and arrowheads cyan, for plain terminals (fzf previews). */
+export function ansiArt(art: string): string {
+  const color = { line: '\x1b[90m', arrow: '\x1b[36m', text: '' };
+  return art
+    .split('\n')
+    .map((l) => colorRuns(l).map((r) => (r.kind === 'text' ? r.text : `${color[r.kind]}${r.text}\x1b[0m`)).join(''))
+    .join('\n');
 }

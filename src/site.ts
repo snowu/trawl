@@ -3,7 +3,7 @@ import { basename, join, posix, relative, resolve } from 'node:path';
 import { Marked, type Tokens } from 'marked';
 import { check, formatProblem } from './commands.ts';
 import { gitRoot } from './find.ts';
-import { type Diagram, type Doc, parseDoc, slug } from './markdown.ts';
+import { type Diagram, type Doc, parseDoc, plainHeading, slug } from './markdown.ts';
 import { svgToPng, toSvg } from './render.ts';
 import { sectionText } from './refs.ts';
 import { findMarkdown } from './scan.ts';
@@ -107,7 +107,7 @@ function renderDoc(doc: Doc, raw: string, path: string, keyFor: (d: Diagram) => 
         return escapeHtml(text);
       },
       heading({ tokens, depth, text }: Tokens.Heading) {
-        return `<h${depth} id="${slug(text)}">${this.parser.parseInline(tokens)}</h${depth}>\n`;
+        return `<h${depth} id="${slug(plainHeading(text) || text)}">${this.parser.parseInline(tokens)}</h${depth}>\n`;
       },
       code({ text, lang }: Tokens.Code) {
         if ((lang ?? '').split(/\s/)[0] === 'mermaid') {

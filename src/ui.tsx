@@ -5,12 +5,13 @@ import { copyText } from './clipboard.ts';
 import { check } from './commands.ts';
 import { openDiagrams, type Viewer } from './open.ts';
 import {
+  cellPixels,
   clearImage,
+  detectImages,
   FULL_VIEW,
   imageArea,
   hideImage,
-  imagesSupported,
-  queryCellAspect,
+  type ImageMode,
   panBy,
   placeImage,
   transmitImage,
@@ -18,7 +19,8 @@ import {
   zoomAt,
 } from './kitty.ts';
 import { MOUSE_OFF, MOUSE_ON, parseMouse } from './mouse.ts';
-import { renderToCache, toAscii } from './render.ts';
+import { asciiArt, colorRuns, renderToCache, svgToRgba, toSvg } from './render.ts';
+import { encodeSixel, type Rgba, scaleCrop } from './sixel.ts';
 import { type Diagram, displayPath, tildePath } from './scan.ts';
 
 const PAN_STEP = 8;
@@ -36,45 +38,16 @@ export function filterDiagrams(diagrams: Diagram[], query: string): Diagram[] {
 const asciiCache = new Map<Diagram, string | null>();
 
 
-type Run = { text: string; kind: 'line' | 'arrow' | 'text' };
-// Box drawing, the corner glyphs used for some node shapes, and diamonds; then arrowheads.
-const LINE_CHARS = /[\u2500-\u257f\u2308-\u230f\u231c-\u231f\u25c6\u25c7]/;
-const ARROW_CHARS = /[\u25b2\u25b6\u25b8\u25ba\u25bc\u25c0\u25c2\u25c4\u2190-\u2193]/;
-
-/**
- * Splits a plain ASCII-art line into runs of box lines, arrowheads and label text, so the preview can color
- * them itself (the library's ANSI themes assume a light background and break truncation and panning).
- */
-export function colorRuns(line: string): Run[] {
-  const runs: Run[] = [];
-  for (const ch of line) {
-    const kind = ARROW_CHARS.test(ch) ? 'arrow' : LINE_CHARS.test(ch) ? 'line' : 'text';
-    const last = runs.at(-1);
-    if (last?.kind === kind) last.text += ch;
-    else runs.push({ text: ch, kind });
-  }
-  return runs;
-}
+export { colorRuns };
 
 /** Box-drawing preview, or null when beautiful-mermaid can't draw this diagram type. */
 function asciiPreview(diagram: Diagram): string | null {
-  if (!asciiCache.has(diagram)) {
-    try {
-      // Subgraph boxes carry a `rect [rgb(...)]` caption from the source's styling: draw it as plain border.
-      // HTML in labels (<b>, <br/>) is blanked to spaces of the same width so the boxes stay aligned.
-      const art = toAscii(diagram.source)
-        .replace(/rect \[rgb\([^)]*\)\]/g, (m) => '─'.repeat(m.length))
-        .replace(/<\/?[a-z]+\s*\/?>/gi, (m) => ' '.repeat(m.length));
-      asciiCache.set(diagram, art);
-    } catch {
-      asciiCache.set(diagram, null);
-    }
-  }
+  if (!asciiCache.has(diagram)) asciiCache.set(diagram, asciiArt(diagram.source));
   return asciiCache.get(diagram)!;
 }
 
 /** How the picker closed: 'choose' asks the caller to pick folders with fzf and reopen. */
-export type PickerResult = 'quit' | 'choose' | 'all';
+export type PickerResult = 'quit' | 'choose' | 'all' | 'docs';
 
 type Row = { header: string } | { diagram: Diagram };
 
@@ -114,14 +87,19 @@ interface PickerProps {
   roots: string[];
   viewer: Viewer;
   /** Real rendered PNGs in the preview pane (Ghostty, kitty, WezTerm); colored ASCII otherwise. */
-  images: boolean;
-  onDone: (r: PickerResult) => void;
+  /** How to show real images; true means kitty (kept for callers that only know on/off). */
+  images: ImageMode | boolean;
+  /** Filter text to start with (e.g. the docs view's query on a switch). */
+  initialQuery?: string;
+  /** How the picker closed, and the filter text (carried to the docs view on a switch). */
+  onDone: (r: PickerResult, query: string) => void;
 }
 
-export function Picker({ diagrams, roots, viewer, images, onDone }: PickerProps) {
+export function Picker({ diagrams, roots, viewer, images: imagesProp, initialQuery, onDone }: PickerProps) {
+  const images: ImageMode = imagesProp === true ? 'kitty' : imagesProp;
   const { exit } = useApp();
   const { columns, rows } = useWindowSize();
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(initialQuery ?? '');
   const [cursor, setCursor] = useState(0);
   const [marked, setMarked] = useState<Set<Diagram>>(new Set());
   const [panX, setPanX] = useState(0);
@@ -193,7 +171,12 @@ export function Picker({ diagrams, roots, viewer, images, onDone }: PickerProps)
     if (key.leftArrow || key.rightArrow) return select(folderJump(key.leftArrow ? -1 : 1));
     if (key.ctrl && input === 't') return setShowSource((s) => !s);
     if (key.ctrl && (input === 'f' || input === 'a')) {
-      onDone(input === 'f' ? 'choose' : 'all');
+      onDone(input === 'f' ? 'choose' : 'all', query);
+      return exit();
+    }
+    // Switch to the docs view (the alt+k search), keeping the filter as its query.
+    if ((key.ctrl && input === 's') || (key.meta && input === 'k')) {
+      onDone('docs', query);
       return exit();
     }
     if (key.tab && current) {
@@ -232,16 +215,18 @@ export function Picker({ diagrams, roots, viewer, images, onDone }: PickerProps)
   const ascii = current && !showSource && !problem && !imageMode ? asciiPreview(current) : null;
 
   // Image preview: render the PNG (cached) once the cursor rests, upload it, then place it after every redraw.
-  const [image, setImage] = useState<{ diagram: Diagram; png: Uint8Array } | null>(null);
+  const [image, setImage] = useState<{ diagram: Diagram; png: Uint8Array; rgba?: Rgba } | null>(null);
   useEffect(() => {
     if (!imageMode || !current) return;
     let live = true;
     const timer = setTimeout(async () => {
       try {
         const png = await Bun.file(await renderToCache(current.source, 'png')).bytes();
+        // Sixel needs raw pixels; same 2x render as the PNG, so zoom/pan math in PNG pixels applies to both.
+        const rgba = images === 'sixel' ? await svgToRgba(toSvg(current.source)) : undefined;
         if (!live) return;
-        process.stdout.write(transmitImage(png));
-        setImage({ diagram: current, png });
+        if (images === 'kitty') process.stdout.write(transmitImage(png));
+        setImage({ diagram: current, png, rgba });
       } catch {
         if (live) setImageError(current);
       }
@@ -258,11 +243,59 @@ export function Picker({ diagrams, roots, viewer, images, onDone }: PickerProps)
   // Pane interior below the title line and its margin.
   const imageBox = { row: 5, col: listWidth + 3, cols: previewWidth - 4, rows: bodyHeight - 2 };
   useEffect(() => {
-    if (!images) return;
+    if (images !== 'kitty') return;
     // After Ink has written this frame: text redraws don't remove images, so place (or hide) explicitly.
     const timer = setTimeout(() => process.stdout.write(shown ? placeImage(shown.png, imageBox, view) : hideImage()), 30);
     return () => clearTimeout(timer);
   });
+  // Sixel: the encoded frame for what's shown now (cached per diagram, size and view); the repaint hook below
+  // draws it after every frame Ink writes, since Ink's redraw erases the pixels.
+  const sixelFrame = useRef<string | null>(null);
+  const sixelCache = useRef<{ key: string; frame: string } | null>(null);
+  if (images === 'sixel') {
+    if (shown?.rgba) {
+      const area = imageArea(shown.png, imageBox);
+      const key = `${shown.diagram.file}:${shown.diagram.line}:${area.cols}x${area.rows}:${view.zoom},${view.x},${view.y}`;
+      if (sixelCache.current?.key !== key) {
+        const pixels = scaleCrop(shown.rgba, view, area.cols * cellPixels.width, area.rows * cellPixels.height);
+        sixelCache.current = { key, frame: `\x1b7\x1b[${area.row};${area.col}H${encodeSixel(pixels)}\x1b8` };
+      }
+      sixelFrame.current = sixelCache.current.frame;
+    } else sixelFrame.current = null;
+  }
+  useEffect(() => {
+    if (images !== 'sixel') return;
+    const write = process.stdout.write.bind(process.stdout);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let painting = false;
+    const paint = () => {
+      if (!sixelFrame.current) return;
+      painting = true;
+      try {
+        write(sixelFrame.current);
+      } finally {
+        painting = false;
+      }
+    };
+    process.stdout.write = ((...args: Parameters<typeof write>) => {
+      const ok = write(...args);
+      if (!painting) {
+        clearTimeout(timer);
+        timer = setTimeout(paint, 20);
+      }
+      return ok;
+    }) as typeof process.stdout.write;
+    return () => {
+      clearTimeout(timer);
+      process.stdout.write = write;
+    };
+  }, []);
+  // A new image (or zoom) with no text change still needs a paint.
+  useEffect(() => {
+    if (images !== 'sixel') return;
+    const timer = setTimeout(() => sixelFrame.current && process.stdout.write(''), 40);
+    return () => clearTimeout(timer);
+  }, [shown, view, imageBox.cols, imageBox.rows]);
   const previewBody = ascii ?? current?.source ?? '';
   // Cut lines at the pane edge ourselves (no "…" column) and say when there's more to pan or scroll to.
   const artWidth = previewWidth - 4;
@@ -329,6 +362,7 @@ export function Picker({ diagrams, roots, viewer, images, onDone }: PickerProps)
     ['tab', 'mark'],
     ['ctrl-f', 'subfolders'],
     ['ctrl-a', 'all folders'],
+    ['ctrl-s', 'docs view'],
     ['ctrl-t', showSource ? 'diagram' : 'source'],
     ['ctrl-y', 'copy code'],
     ['←/→', 'folders'],
@@ -477,15 +511,20 @@ export function Picker({ diagrams, roots, viewer, images, onDone }: PickerProps)
   );
 }
 
-export async function runPicker(diagrams: Diagram[], roots: string[], viewer: Viewer): Promise<PickerResult> {
+export async function runPicker(
+  diagrams: Diagram[],
+  roots: string[],
+  viewer: Viewer,
+  initialQuery = '',
+): Promise<{ result: PickerResult; query: string }> {
   let result: PickerResult = 'quit';
+  let query = '';
   // Alternate screen, like vim/less: often summoned from a keybind, so restore the terminal on exit.
   // Ink switches screens without homing the cursor, so a keybind fired mid-prompt would draw the first
   // row at the prompt's column: enter the alternate screen and home the cursor ourselves first.
   process.stdout.write('\x1b[?1049h\x1b[H');
-  const images = imagesSupported();
-  if (images) await queryCellAspect();
-  const app = render(<Picker diagrams={diagrams} roots={roots} viewer={viewer} images={images} onDone={(r) => (result = r)} />, {
+  const images = await detectImages();
+  const app = render(<Picker diagrams={diagrams} roots={roots} viewer={viewer} images={images} initialQuery={initialQuery} onDone={(r, q) => ((result = r), (query = q))} />, {
     alternateScreen: true,
   });
   await app.waitUntilExit();
@@ -494,6 +533,6 @@ export async function runPicker(diagrams: Diagram[], roots: string[], viewer: Vi
   process.stdin.pause();
   // Restore the terminal even if the effect cleanups did not get to run.
   process.stdout.write(MOUSE_OFF);
-  if (images) process.stdout.write(clearImage());
-  return result;
+  if (images === 'kitty') process.stdout.write(clearImage());
+  return { result, query };
 }

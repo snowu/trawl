@@ -4,18 +4,32 @@
 const IMAGE_ID = 7_341;
 const ESC = '\x1b';
 
-/** Whether the terminal can show inline images. TRAWL_IMAGES=0/1 overrides the detection. */
-export function imagesSupported(env: Record<string, string | undefined> = process.env): boolean {
-  if (env.TRAWL_IMAGES === '0' || env.TRAWL_IMAGES === '1') return env.TRAWL_IMAGES === '1';
-  // shortcut: tmux needs passthrough wrapping for the protocol; fall back to ASCII there until someone asks.
+/** How the picker shows real images: the kitty protocol, sixel, or not at all (box-drawing art). */
+export type ImageMode = 'kitty' | 'sixel' | false;
+
+/**
+ * Inline image support from the environment alone. TRAWL_IMAGES=0/1/kitty/sixel overrides the detection;
+ * otherwise kitty-protocol terminals by name, and sixel for Windows Terminal. `detectImages` also asks the
+ * terminal itself, which catches every other sixel terminal.
+ */
+export function imagesSupported(env: Record<string, string | undefined> = process.env): ImageMode {
+  const forced = env.TRAWL_IMAGES;
+  if (forced === '0') return false;
+  if (forced === '1' || forced === 'kitty') return 'kitty';
+  if (forced === 'sixel') return 'sixel';
+  // shortcut: tmux needs passthrough wrapping for the protocols; fall back to ASCII there until someone asks.
   if (env.TMUX) return false;
-  return (
+  if (
     env.TERM === 'xterm-kitty' ||
     env.TERM === 'xterm-ghostty' ||
     env.TERM_PROGRAM === 'ghostty' ||
     env.TERM_PROGRAM === 'WezTerm' ||
     env.KITTY_WINDOW_ID !== undefined
-  );
+  ) {
+    return 'kitty';
+  }
+  if (env.WT_SESSION) return 'sixel';
+  return false;
 }
 
 /** Pixel size from a PNG's IHDR chunk. */
@@ -33,23 +47,67 @@ export interface Box {
   rows: number;
 }
 
-/** Cell height / width in pixels. 2 is typical; queryCellAspect() measures the real one. */
+/** Cell height / width in pixels. 2 is typical; detectImages() measures the real one. */
 let cellAspect = 2;
+/**
+ * Cell size in pixels, needed to size sixel images (kitty scales to cells itself). The default is deliberately
+ * small: a sixel image taller than its box scrolls the whole screen, one that's a bit small is harmless.
+ */
+export const cellPixels = { width: 8, height: 16 };
+/** The terminal's background color (OSC 11), to pad images with so they paint over old ones; null when unknown. */
+export let terminalBackground: [number, number, number] | null = null;
+
+/** `ESC ] 11 ; rgb:RRRR/GGGG/BBBB` (1-4 hex digits per channel) -> [r, g, b] in 0..255. */
+export function parseBackground(reply: string): [number, number, number] | null {
+  const m = /\x1b\]11;rgb:([0-9a-f]{1,4})\/([0-9a-f]{1,4})\/([0-9a-f]{1,4})/i.exec(reply);
+  if (!m) return null;
+  return [m[1], m[2], m[3]].map((h) => Math.round((parseInt(h, 16) / (16 ** h.length - 1)) * 255)) as [number, number, number];
+}
+
+/** Whether cellPixels was measured (terminal reply, or TRAWL_CELL=WxH) rather than guessed. */
+export let cellMeasured = false;
 
 /**
- * Asks the terminal for its cell size in pixels (CSI 16 t, answered as CSI 6 ; h ; w t) so images keep their
- * proportions with any font. Run before Ink takes over stdin; keeps the default if there's no answer in time.
+ * Reads the replies to CSI 16 t (cell size), CSI 14 t (text area size, divided by the terminal's columns and
+ * rows when 16 t went unanswered) and DA1 (attribute 4 = sixel).
  */
-export async function queryCellAspect(timeoutMs = 200): Promise<void> {
+export function parseTerminalReplies(
+  reply: string,
+  grid: { columns: number; rows: number } = { columns: process.stdout.columns ?? 0, rows: process.stdout.rows ?? 0 },
+): { cell?: { width: number; height: number }; sixel: boolean } {
+  const size = /\x1b\[6;(\d+);(\d+)t/.exec(reply);
+  const area = /\x1b\[4;(\d+);(\d+)t/.exec(reply);
+  const da1 = /\x1b\[\?([\d;]*)c/.exec(reply);
+  let cell: { width: number; height: number } | undefined;
+  if (size && Number(size[1]) > 0 && Number(size[2]) > 0) cell = { height: Number(size[1]), width: Number(size[2]) };
+  else if (area && grid.columns > 0 && grid.rows > 0 && Number(area[1]) > 0 && Number(area[2]) > 0) {
+    cell = { height: Math.floor(Number(area[1]) / grid.rows), width: Math.floor(Number(area[2]) / grid.columns) };
+  }
+  return { cell, sixel: !!da1 && da1[1].split(';').includes('4') };
+}
+
+/**
+ * Asks the terminal for its cell size in pixels (CSI 16 t, or 14 t) and its attributes (DA1), before Ink takes over
+ * stdin: images keep their proportions with any font, and terminals that report sixel get it even when the
+ * environment doesn't say what they are. Every terminal answers DA1, so the wait ends as soon as it arrives.
+ */
+export async function detectImages(env: Record<string, string | undefined> = process.env, timeoutMs = 250): Promise<ImageMode> {
+  let mode = imagesSupported(env);
+  const forcedCell = /^(\d+)x(\d+)$/.exec(env.TRAWL_CELL ?? '');
+  if (forcedCell) {
+    Object.assign(cellPixels, { width: Number(forcedCell[1]), height: Number(forcedCell[2]) });
+    cellAspect = cellPixels.height / cellPixels.width;
+    cellMeasured = true;
+  }
   const stdin = process.stdin;
-  if (!stdin.isTTY) return;
+  if (!stdin.isTTY || env.TMUX || env.TRAWL_IMAGES === '0') return mode;
   stdin.setRawMode(true);
   stdin.resume();
   const reply = await new Promise<string>((resolve) => {
     let buffer = '';
     const onData = (chunk: Buffer) => {
       buffer += chunk.toString();
-      if (/\x1b\[6;\d+;\d+t/.test(buffer)) done();
+      if (/\x1b\[\?[\d;]*c/.test(buffer)) done();
     };
     const done = () => {
       clearTimeout(timer);
@@ -58,12 +116,19 @@ export async function queryCellAspect(timeoutMs = 200): Promise<void> {
     };
     const timer = setTimeout(done, timeoutMs);
     stdin.on('data', onData);
-    process.stdout.write('\x1b[16t');
+    process.stdout.write('\x1b[16t\x1b[14t\x1b]11;?\x1b\\\x1b[c');
   });
   // Leave stdin flowing: pausing it lets Bun end the process once Ink takes over (the picker vanished on its own).
   stdin.setRawMode(false);
-  const m = /\x1b\[6;(\d+);(\d+)t/.exec(reply);
-  if (m && Number(m[2]) > 0) cellAspect = Number(m[1]) / Number(m[2]);
+  const { cell, sixel } = parseTerminalReplies(reply);
+  terminalBackground = parseBackground(reply) ?? terminalBackground;
+  if (cell && !forcedCell) {
+    cellAspect = cell.height / cell.width;
+    Object.assign(cellPixels, cell);
+    cellMeasured = true;
+  }
+  if (!mode && sixel && env.TRAWL_IMAGES === undefined) mode = 'sixel';
+  return mode;
 }
 
 /**

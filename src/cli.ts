@@ -28,6 +28,7 @@ Usage:
   trawl find --plain QUERY...      print matches as path:line  section  snippet (for scripts and agents)
   trawl show FILE[:LINE|#ID]       print the section at LINE / with that heading or diagram id, or the file
   trawl index [--rebuild]          update the search index now and print what it holds
+  trawl doctor                     what trawl detects: terminal images, cell size, fzf, folders
   trawl mcp                        run as an MCP server on stdio (search, read, diagrams, check, render)
 
   trawl site [paths...] -o DIR     build a review site of this repo's docs and diagrams (default dir: trawl-site)
@@ -51,6 +52,7 @@ Options:
   -i, --in DIR         find: search only this folder (repeatable)
       --plain          find: print results instead of opening fzf
       --limit N        find: at most N results (default 50)
+      --prose          find: leave out sections that are only diagrams (the docs view does)
       --repo OWNER/NAME  site: GitHub repo for links and change requests (default: from git remote)
       --branch NAME    site: branch for "View on GitHub" links (default: current)
       --name NAME      site: title (default: the folder name)
@@ -61,7 +63,7 @@ Options:
   -v, --version        show the version
 `;
 
-const COMMANDS = new Set(['open', 'list', 'check', 'render', 'roots', 'find', 'show', 'index', 'mcp', 'site', 'diff']);
+const COMMANDS = new Set(['doctor', 'open', 'list', 'check', 'render', 'roots', 'find', 'show', 'index', 'mcp', 'site', 'diff']);
 
 /**
  * Folders to scan, as absolute paths. `--all`: the configured roots. Paths given: those. Otherwise
@@ -142,12 +144,14 @@ async function openCommand(args: string[], viewer: Viewer): Promise<number> {
   return 0;
 }
 
-async function showCommand(refs: string[], color = false): Promise<number> {
+async function showCommand(refs: string[], color = false, opts: { preview?: boolean; query?: string } = {}): Promise<number> {
+  // fzf runs the preview even with no results, with an empty {1}: show nothing rather than an error.
+  if (opts.preview && refs.every((r) => !r.trim())) return 0;
   if (!refs.length) {
     console.error('trawl: show needs FILE[:LINE|#ID]');
     return 2;
   }
-  const out = await Promise.all(refs.map((r) => showRef(r, color)));
+  const out = await Promise.all(refs.map((r) => showRef(r, color, opts)));
   console.log(out.join('\n\n'));
   return 0;
 }
@@ -155,7 +159,7 @@ async function showCommand(refs: string[], color = false): Promise<number> {
 /** `trawl find`: refresh the index for the scope, then fzf (interactive) or print matches. */
 async function findCommand(
   query: string,
-  opts: { in?: string[]; plain?: boolean; color?: boolean; 'no-refresh'?: boolean; limit?: string },
+  opts: { in?: string[]; plain?: boolean; color?: boolean; prose?: boolean; 'no-refresh'?: boolean; limit?: string },
   viewer: Viewer,
 ): Promise<number> {
   const roots = opts.in?.length ? opts.in.map((p) => resolve(p)) : await searchRoots();
@@ -165,9 +169,9 @@ async function findCommand(
     const interactive = !opts.plain && process.stdin.isTTY && process.stdout.isTTY && Bun.which('fzf');
     if (interactive) {
       store.close();
-      return interactiveFind(query, roots, viewer);
+      return runViews('docs', roots, query, viewer);
     }
-    const hits = lookup(store, query, roots, Number(opts.limit) || 50);
+    const hits = lookup(store, query, roots, Number(opts.limit) || 50, opts.prose);
     for (const h of hits) console.log(formatHit(h, opts.color));
     return hits.length || !query.trim() ? 0 : 1;
   } finally {
@@ -241,6 +245,44 @@ async function diffCommand(
   return 0;
 }
 
+/** Prints what trawl detects about this terminal and setup, for bug reports about images or folders. */
+async function doctorCommand(): Promise<number> {
+  // The module namespace, not destructured names: cellMeasured is reassigned by detectImages.
+  const kitty = await import('./kitty.ts');
+  const { getWinsize, setPixelSize } = await import('./tty.ts');
+  const before = getWinsize();
+  const images = await kitty.detectImages();
+  process.stdin.pause();
+  const fmt = (w: ReturnType<typeof getWinsize>) => (w ? `${w.cols}x${w.rows} cells, ${w.xpixel}x${w.ypixel} px` : 'unreadable');
+  // What fzf will see: write the measured pixel size, read it back now and after a moment (something may reset it).
+  let pixelTest = 'skipped (cell size not measured)';
+  if (kitty.cellMeasured) {
+    const wrote = setPixelSize(kitty.cellPixels);
+    const now = getWinsize();
+    await Bun.sleep(500);
+    const later = getWinsize();
+    pixelTest = `${wrote ? 'written' : 'write FAILED'}; reads back ${fmt(now)}, after 0.5s ${fmt(later)}`;
+  }
+  const fzf = Bun.which('fzf') ? Bun.spawnSync(['fzf', '--version']).stdout.toString().trim() : 'not installed';
+  const env = ['TERM', 'TERM_PROGRAM', 'WT_SESSION', 'TMUX', 'TRAWL_IMAGES', 'TRAWL_CELL']
+    .map((k) => `${k}=${process.env[k] ?? ''}`)
+    .join(' ');
+  const { roots, ignore } = await loadConfig();
+  console.log(
+    [
+      `trawl ${pkg.version} on ${process.platform}`,
+      `images: ${images || 'none (box art)'}`,
+      `cell: ${kitty.cellPixels.width}x${kitty.cellPixels.height} px (${kitty.cellMeasured ? 'measured' : 'guessed: the terminal did not answer CSI 16 t / 14 t'})`,
+      `tty winsize: ${fmt(before)}`,
+      `pixel size for fzf: ${pixelTest}`,
+      `fzf: ${fzf}`,
+      `env: ${env}`,
+      `folders: ${roots.map(tildePath).join(', ') || 'none'}${ignore?.length ? `; ignoring ${ignore.join(', ')}` : ''}`,
+    ].join('\n'),
+  );
+  return 0;
+}
+
 async function main(): Promise<number> {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
@@ -254,6 +296,9 @@ async function main(): Promise<number> {
       in: { type: 'string', short: 'i', multiple: true },
       plain: { type: 'boolean' },
       color: { type: 'boolean' },
+      preview: { type: 'boolean' },
+      prose: { type: 'boolean' },
+      query: { type: 'string' },
       'no-refresh': { type: 'boolean' },
       rebuild: { type: 'boolean' },
       limit: { type: 'string', default: '50' },
@@ -274,7 +319,8 @@ async function main(): Promise<number> {
   const viewer: Viewer = values.browser ? 'browser' : defaultViewer();
   if (command === 'open') return openCommand(positionals, viewer);
   if (command === 'roots') return rootsCommand(positionals);
-  if (command === 'show') return showCommand(positionals, values.color);
+  if (command === 'doctor') return doctorCommand();
+  if (command === 'show') return showCommand(positionals, values.color, { preview: values.preview, query: values.query });
   if (command === 'find') return findCommand(positionals.join(' '), values, viewer);
   if (command === 'index') return indexCommand(values.rebuild);
   if (command === 'site') return siteCommand(positionals, values);
@@ -322,13 +368,44 @@ async function main(): Promise<number> {
     console.error('trawl: the picker needs a terminal; use `trawl list` in pipes');
     return 2;
   }
+  return runViews('diagrams', paths, '', viewer, diagrams);
+}
+
+/**
+ * The two interactive views over the same folders: docs (fzf search) and diagrams (the picker). ctrl-s in either
+ * switches to the other, carrying the typed text; the diagrams come from the index the docs view keeps fresh.
+ */
+async function runViews(start: 'docs' | 'diagrams', scope: string[], query: string, viewer: Viewer, diagrams?: Diagram[]): Promise<number> {
   const { runPicker } = await import('./ui.tsx');
+  let view = start;
   let current = diagrams;
-  // ctrl+f / ctrl+a close the picker to rescan: chosen subfolders (fzf) or every configured folder; then reopen.
-  let scope = paths;
   while (true) {
-    const result = await runPicker(current, scope, viewer);
+    if (view === 'docs') {
+      const r = await interactiveFind(query, scope, viewer);
+      if (r.kind === 'quit') return r.code;
+      query = r.query;
+      view = 'diagrams';
+      current = undefined;
+      continue;
+    }
+    if (!current) {
+      const store = new Store();
+      await store.refresh(scope);
+      current = store.diagrams(scope);
+      store.close();
+    }
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      console.error('trawl: the picker needs a terminal; use `trawl list` in pipes');
+      return 2;
+    }
+    const { result, query: typed } = await runPicker(current, scope, viewer, query);
+    query = typed;
     if (result === 'quit') return 0;
+    if (result === 'docs') {
+      view = 'docs';
+      continue;
+    }
+    // ctrl+f / ctrl+a: rescan chosen subfolders (fzf) or every configured folder, then reopen.
     const next = result === 'all' ? (await loadConfig()).roots : await chooseFolders(scope);
     if (!next.length) continue; // fzf cancelled, or no folders configured: back to the same list
     scope = next;

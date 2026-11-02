@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { FULL_VIEW, fitCells, imagesSupported, panBy, pngSize, transmitImage, zoomAt } from '../src/kitty.ts';
+import { FULL_VIEW, fitCells, imagesSupported, panBy, parseTerminalReplies, pngSize, transmitImage, zoomAt } from '../src/kitty.ts';
 import { parseMouse } from '../src/mouse.ts';
 
 /** A PNG header with the given size (enough for pngSize / fitCells, which only read IHDR). */
@@ -12,13 +12,25 @@ function fakePng(width: number, height: number): Uint8Array {
 }
 
 describe('imagesSupported', () => {
-  test('detects kitty-protocol terminals, not tmux, and honours TRAWL_IMAGES', () => {
-    expect(imagesSupported({ TERM_PROGRAM: 'ghostty' })).toBe(true);
-    expect(imagesSupported({ TERM: 'xterm-kitty' })).toBe(true);
+  test('detects kitty-protocol terminals, sixel for Windows Terminal, not tmux, and honours TRAWL_IMAGES', () => {
+    expect(imagesSupported({ TERM_PROGRAM: 'ghostty' })).toBe('kitty');
+    expect(imagesSupported({ TERM: 'xterm-kitty' })).toBe('kitty');
+    expect(imagesSupported({ TERM: 'xterm-256color', WT_SESSION: 'abc' })).toBe('sixel');
     expect(imagesSupported({ TERM: 'alacritty' })).toBe(false);
     expect(imagesSupported({ TERM_PROGRAM: 'ghostty', TMUX: '/tmp/tmux' })).toBe(false);
+    expect(imagesSupported({ WT_SESSION: 'abc', TMUX: '/tmp/tmux' })).toBe(false);
     expect(imagesSupported({ TERM_PROGRAM: 'ghostty', TRAWL_IMAGES: '0' })).toBe(false);
-    expect(imagesSupported({ TERM: 'alacritty', TRAWL_IMAGES: '1' })).toBe(true);
+    expect(imagesSupported({ TERM: 'alacritty', TRAWL_IMAGES: '1' })).toBe('kitty');
+    expect(imagesSupported({ TERM: 'alacritty', TRAWL_IMAGES: 'sixel' })).toBe('sixel');
+  });
+
+  test('terminal replies: cell size from CSI 16 t, sixel from DA1 attribute 4', () => {
+    expect(parseTerminalReplies('\x1b[6;19;9t\x1b[?61;4;6;7;14;21;22;23;24;28;32;42c')).toEqual({ cell: { height: 19, width: 9 }, sixel: true });
+    const grid = { columns: 100, rows: 40 };
+    expect(parseTerminalReplies('\x1b[?62;22c', grid)).toEqual({ cell: undefined, sixel: false });
+    expect(parseTerminalReplies('', grid)).toEqual({ cell: undefined, sixel: false });
+    // No 16 t answer: the text area's pixels over the grid.
+    expect(parseTerminalReplies('\x1b[4;800;900t\x1b[?65;4c', grid)).toEqual({ cell: { height: 20, width: 9 }, sixel: true });
   });
 });
 
@@ -66,4 +78,11 @@ describe('viewport', () => {
       { kind: 'press', button: 'right', col: 1, row: 1 },
     ]);
   });
+});
+
+import { parseBackground } from '../src/kitty.ts';
+test('parseBackground reads OSC 11 replies in any digit width', () => {
+  expect(parseBackground('\x1b]11;rgb:0c0c/0c0c/0c0c\x1b\\')).toEqual([12, 12, 12]);
+  expect(parseBackground('\x1b]11;rgb:ff/80/00\x07')).toEqual([255, 128, 0]);
+  expect(parseBackground('nope')).toBeNull();
 });
