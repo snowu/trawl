@@ -1,6 +1,7 @@
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { check } from './commands.ts';
+import { runGit } from './git.ts';
 import { type Diagram, parseDoc } from './markdown.ts';
 import { svgToPng, toSvg } from './render.ts';
 
@@ -24,14 +25,14 @@ export interface Change {
 const MARKER = '<!-- trawl-diagram-diff -->';
 
 function git(cwd: string, args: string[]): string | null {
-  const r = Bun.spawnSync(['git', ...args], { cwd, stderr: 'ignore' });
-  return r.success ? r.stdout.toString() : null;
+  const r = runGit(args, cwd);
+  return r.ok ? r.stdout : null;
 }
 
 function gitOrThrow(cwd: string, args: string[]): string {
-  const r = Bun.spawnSync(['git', ...args], { cwd });
-  if (!r.success) throw new Error(`git ${args.join(' ')}: ${r.stderr.toString().trim()}`);
-  return r.stdout.toString();
+  const r = runGit(args, cwd, { stderr: true });
+  if (!r.ok) throw new Error(`git ${args.join(' ')}: ${r.stderr.trim()}`);
+  return r.stdout;
 }
 
 const isDiagramFile = (p: string) => /\.(md|mmd)$/.test(p);

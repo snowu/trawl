@@ -3,6 +3,7 @@ import { basename, join, posix, relative, resolve } from 'node:path';
 import { Marked, type Tokens } from 'marked';
 import { check, formatProblem } from './commands.ts';
 import { gitRoot } from './find.ts';
+import { runGit } from './git.ts';
 import { type Diagram, type Doc, parseDoc, plainHeading, slug } from './markdown.ts';
 import { svgToPng, toSvg } from './render.ts';
 import { sectionText } from './refs.ts';
@@ -74,8 +75,8 @@ export function githubUrl(remote: string): string | null {
 }
 
 function git(cwd: string, ...args: string[]): string | null {
-  const r = Bun.spawnSync(['git', ...args], { cwd, stderr: 'ignore' });
-  return r.success ? r.stdout.toString().trim() : null;
+  const r = runGit(args, cwd);
+  return r.ok ? r.stdout.trim() : null;
 }
 
 /** GitHub repo and branch of `dir`, unless overridden (`owner/name`, branch). */
