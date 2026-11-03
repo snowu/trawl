@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ToolResult } from '../src/mcp-protocol.ts';
 import { buildSite, type SiteData } from '../src/site.ts';
-import { authorized, DocsServer, type Env } from '../worker/src/index.ts';
+import { DocsServer, type GitHubApi } from '../src/hosted/docs.ts';
+import { authorized, type Env } from '../worker/src/index.ts';
 
 const DOC = '# Flows\n\n## Checkout\n\n```mermaid id=checkout\nflowchart LR\n  cart --> pay\n```\n\nText after.\n';
 let dir: string;
@@ -39,17 +40,49 @@ afterAll(async () => {
 });
 
 const env = (extra: Partial<Env> = {}): Env => ({ ASSETS: { fetch: async () => new Response('x') }, ...extra });
+
+/** A GitHub client over the mocked fetch, like the hosts build. */
+const github: GitHubApi = async (path, init = {}) => {
+  const res = await fetch(`https://api.github.com/repos/o/r${path}`, { method: init.method ?? 'GET', body: init.body ? JSON.stringify(init.body) : undefined });
+  const json = (await res.json()) as Record<string, unknown>;
+  if (!res.ok) throw new Error(`GitHub ${res.status}`);
+  return json;
+};
+const audit: unknown[] = [];
+const server = (opts: { write?: boolean; user?: { email: string; roles: Set<'request' | 'propose'> } } = {}) =>
+  new DocsServer({
+    origin: 'https://docs.example',
+    data,
+    asset: async () => null,
+    github: opts.write ? github : undefined,
+    user: opts.user,
+    audit: (e) => audit.push(e),
+  });
 const textOf = (r: ToolResult) => r.content.map((c) => (c.type === 'text' ? c.text : '')).join('\n');
 
 describe('DocsServer', () => {
+  test('roles: tools and calls follow the user; writes say who asked; calls are audited', async () => {
+    const reader = server({ write: true, user: { email: 'r@co.com', roles: new Set() } });
+    expect(reader.tools().map((t) => t.name)).not.toContain('request_change');
+    expect(textOf(await reader.call('request_change', { ref: 'flows.md#checkout', request: 'x' }))).toContain('not allowed');
+    const requester = server({ write: true, user: { email: 'q@co.com', roles: new Set(['request']) } });
+    expect(requester.tools().map((t) => t.name)).toContain('request_change');
+    expect(requester.tools().map((t) => t.name)).not.toContain('propose_change');
+    calls.length = 0;
+    audit.length = 0;
+    await requester.call('request_change', { ref: 'flows.md#checkout', request: 'Show failed payments' });
+    expect(calls[0].body.body).toContain('Requested by q@co.com');
+    expect(audit).toEqual([{ user: 'q@co.com', tool: 'request_change', ref: 'flows.md#checkout', ok: true, detail: 'Filed https://github.com/o/r/issues/8' }]);
+  });
+
   test('read-only without a GitHub token', () => {
-    const s = new DocsServer(env(), 'https://docs.example', data);
+    const s = server();
     expect(s.tools().map((t) => t.name)).not.toContain('propose_change');
     expect(s.instructions).toContain('read-only');
   });
 
   test('read, get_diagram, and site links as refs', async () => {
-    const s = new DocsServer(env(), 'https://docs.example', data);
+    const s = server();
     expect(textOf(await s.call('read', { ref: 'flows.md#checkout' }))).toContain('## Checkout');
     const d = textOf(await s.call('get_diagram', { ref: 'https://docs.example/#/doc/flows.md/checkout' }));
     expect(d).toContain('cart --> pay');
@@ -57,7 +90,7 @@ describe('DocsServer', () => {
   });
 
   test('propose_change edits the live file on a new branch and opens a PR', async () => {
-    const s = new DocsServer(env({ GITHUB_TOKEN: 't' }), 'https://docs.example', data);
+    const s = server({ write: true });
     expect((await s.call('propose_change', { ref: 'flows.md#checkout', source: 'flowchart LR\n  cart -->', summary: 'x' })).isError).toBe(true);
     calls.length = 0;
     const res = await s.call('propose_change', { ref: 'flows.md#checkout', source: 'flowchart LR\n  cart --> pay --> done', summary: 'Add done step' });
@@ -72,7 +105,7 @@ describe('DocsServer', () => {
   });
 
   test('request_change files a labelled issue with the ref marker', async () => {
-    const s = new DocsServer(env({ GITHUB_TOKEN: 't' }), 'https://docs.example', data);
+    const s = server({ write: true });
     calls.length = 0;
     expect(textOf(await s.call('request_change', { ref: 'flows.md#checkout', request: 'Show failed payments' }))).toContain('issues/8');
     const issue = calls[0].body;

@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { detectType, parse } from 'pele';
 import { loadConfig } from './config.ts';
+import { runGit } from './git.ts';
 import { cellMeasured, cellPixels, detectImages, terminalBackground } from './kitty.ts';
 import { keepPixelSize, recordedCell, setPixelSize } from './tty.ts';
 import type { Doc, Section } from './markdown.ts';
@@ -16,8 +17,8 @@ import { type Hit, Store } from './store.ts';
 
 /** The git repo containing `cwd`, if any. */
 export function gitRoot(cwd = process.cwd()): string | undefined {
-  const git = Bun.spawnSync(['git', 'rev-parse', '--show-toplevel'], { cwd, stderr: 'ignore' });
-  return git.success ? git.stdout.toString().trim() || undefined : undefined;
+  const git = runGit(['rev-parse', '--show-toplevel'], cwd);
+  return git.ok ? git.stdout.trim() || undefined : undefined;
 }
 
 /**

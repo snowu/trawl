@@ -28,6 +28,7 @@ Usage:
   trawl find --plain QUERY...      print matches as path:line  section  snippet (for scripts and agents)
   trawl show FILE[:LINE|#ID]       print the section at LINE / with that heading or diagram id, or the file
   trawl index [--rebuild]          update the search index now and print what it holds
+  trawl serve                      run the hosted review site + MCP server behind Google sign-in (see deploy/aws)
   trawl doctor                     what trawl detects: terminal images, cell size, fzf, folders
   trawl mcp                        run as an MCP server on stdio (search, read, diagrams, check, render)
 
@@ -63,7 +64,7 @@ Options:
   -v, --version        show the version
 `;
 
-const COMMANDS = new Set(['doctor', 'open', 'list', 'check', 'render', 'roots', 'find', 'show', 'index', 'mcp', 'site', 'diff']);
+const COMMANDS = new Set(['serve', 'doctor', 'open', 'list', 'check', 'render', 'roots', 'find', 'show', 'index', 'mcp', 'site', 'diff']);
 
 /**
  * Folders to scan, as absolute paths. `--all`: the configured roots. Paths given: those. Otherwise
@@ -320,6 +321,11 @@ async function main(): Promise<number> {
   if (command === 'open') return openCommand(positionals, viewer);
   if (command === 'roots') return rootsCommand(positionals);
   if (command === 'doctor') return doctorCommand();
+  if (command === 'serve') {
+    const { runServe } = await import('./hosted/server.ts');
+    await runServe();
+    return 0;
+  }
   if (command === 'show') return showCommand(positionals, values.color, { preview: values.preview, query: values.query });
   if (command === 'find') return findCommand(positionals.join(' '), values, viewer);
   if (command === 'index') return indexCommand(values.rebuild);
