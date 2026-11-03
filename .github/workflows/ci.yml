@@ -34,18 +34,18 @@ jobs:
           set -euo pipefail
           mkdir -m 777 ci-site
           docker run --rm -v "$PWD/examples:/docs:ro" -v "$PWD/ci-site:/out" --entrypoint /usr/local/bin/trawl trawl:ci site /docs -o /out
-          docker run -d --name t --read-only --tmpfs /tmp:uid=65532 --cap-drop ALL -p 8080:8080 \
+          docker run -d --name trawl-ci --read-only --tmpfs /tmp:uid=65532 --cap-drop ALL -p 8080:8080 \
             -e TRAWL_PUBLIC_URL=http://localhost:8080 -e TRAWL_INSECURE_DEV=1 -e TRAWL_ALLOWED_DOMAINS=example.com \
             -e TRAWL_SECRET="$(openssl rand -hex 32)" -e GOOGLE_CLIENT_ID=x -e GOOGLE_CLIENT_SECRET=y \
             -e TRAWL_SITE_DIR=/srv/site -v "$PWD/ci-site:/srv/site:ro" trawl:ci
           for i in $(seq 1 30); do curl -sf localhost:8080/healthz && break; sleep 1; done
-          test "$(docker inspect -f '{{.Config.User}}' t)" = "nonroot:nonroot"
+          test "$(docker inspect -f '{{.Config.User}}' trawl-ci)" = "nonroot:nonroot"
           test "$(curl -s -o /dev/null -w '%{http_code}' -H 'accept: text/html' localhost:8080/)" = 302
           test "$(curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8080/mcp -d '{}')" = 401
           test "$(curl -s -o /dev/null -w '%{http_code}' localhost:8080/trawl.json)" = 401
       - name: Container logs
         if: always()
-        run: docker logs t 2>&1 | tail -50 || true
+        run: docker logs trawl-ci 2>&1 | tail -50 || true
 
   terraform:
     runs-on: ubuntu-latest
