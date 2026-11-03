@@ -1,5 +1,5 @@
 # trawl serve: the hosted review site + MCP server. See deploy/aws/README.md.
-# Build: docker build -t trawl:0.2.0 .            (add --platform linux/arm64 for Graviton)
+# Build: docker build -t trawl:0.3.0 .            (add --platform linux/arm64 for Graviton)
 # The result is one static-ish binary (glibc only) on distroless: no shell, no package manager, non-root.
 
 FROM oven/bun:1.4.4 AS build

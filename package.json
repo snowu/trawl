@@ -1,6 +1,6 @@
 {
   "name": "trawl",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Find, preview and open Mermaid diagrams in markdown files",
   "type": "module",
   "bin": {

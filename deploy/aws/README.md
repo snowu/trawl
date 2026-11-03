@@ -74,9 +74,9 @@ Org settings → *Developer settings → GitHub Apps → New*:
 ### 3. Image
 
 ```sh
-docker build -t trawl:0.2.0 .                      # from the trawl repo root; --platform linux/arm64 for Graviton
+docker build -t trawl:0.3.0 .                      # from the trawl repo root; --platform linux/arm64 for Graviton
 aws ecr get-login-password | docker login --username AWS --password-stdin <account>.dkr.ecr.<region>.amazonaws.com
-docker tag trawl:0.2.0 <ecr_repository_url>:0.2.0 && docker push <ecr_repository_url>:0.2.0
+docker tag trawl:0.3.0 <ecr_repository_url>:0.3.0 && docker push <ecr_repository_url>:0.3.0
 # Terraform wants the digest: <ecr_repository_url>@sha256:...   (docker inspect --format '{{index .RepoDigests 0}}')
 ```
 
