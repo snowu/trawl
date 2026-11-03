@@ -15,10 +15,14 @@ export interface ServeConfig {
   secret: string;
   sessionHours: number;
   tokenDays: number;
-  /** Tokens issued before this instant are rejected (revoke everything by moving it forward). */
+  /** Tokens and sessions issued before this instant are rejected (sign everyone out by moving it forward). */
   tokensNotBefore: number;
   /** Revoked token ids (jti). */
   revokedTokens: Set<string>;
+  /** People refused outright: their sessions and tokens stop working and they can't sign in (offboarding). */
+  blockedUsers: Set<string>;
+  /** Proxies in front of the server that append to X-Forwarded-For (1: the ALB). 0 ignores the header. */
+  proxyHops: number;
   /** Docs: a prebuilt `trawl site` folder, or a GitHub repo synced through the GitHub App. */
   siteDir?: string;
   repo?: { name: string; branch: string; paths: string[]; syncMinutes: number };
@@ -73,7 +77,8 @@ export function loadServeConfig(env: Record<string, string | undefined> = proces
   };
   const port = num('TRAWL_PORT', 8080, 1, 65535);
   const sessionHours = num('TRAWL_SESSION_HOURS', 8, 1, 72);
-  const tokenDays = num('TRAWL_TOKEN_DAYS', 30, 1, 365);
+  const tokenDays = num('TRAWL_TOKEN_DAYS', 14, 1, 90);
+  const proxyHops = num('TRAWL_PROXY_HOPS', 1, 0, 5);
   const syncMinutes = num('TRAWL_SYNC_MINUTES', 10, 1, 1440);
   const notBefore = env.TRAWL_TOKENS_NOT_BEFORE ? Date.parse(env.TRAWL_TOKENS_NOT_BEFORE) : 0;
   if (Number.isNaN(notBefore)) problems.push('TRAWL_TOKENS_NOT_BEFORE must be an ISO date');
@@ -93,6 +98,8 @@ export function loadServeConfig(env: Record<string, string | undefined> = proces
     tokenDays,
     tokensNotBefore: notBefore,
     revokedTokens: new Set(list(env.TRAWL_REVOKED_TOKENS)),
+    blockedUsers: new Set(list(env.TRAWL_BLOCKED_USERS).map((s) => s.toLowerCase())),
+    proxyHops,
     siteDir,
     repo: repoName
       ? { name: repoName, branch: env.TRAWL_GITHUB_BRANCH?.trim() || 'main', paths: list(env.TRAWL_DOCS_PATHS), syncMinutes }

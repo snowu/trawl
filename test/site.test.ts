@@ -21,6 +21,8 @@ owner: product
 
 See [refunds](flows/refunds.md#call) and ![logo](img/logo.png).
 
+Not a link: [click](javascript:alert(1)) or [this](data:text/html,x); [web](https://example.com) is.
+
 ## Flow
 
 \`\`\`mermaid id=checkout-flow
@@ -69,6 +71,9 @@ describe('buildSite', () => {
     expect(html).not.toContain('<script>');
     expect(html).toContain('&lt;script&gt;');
     expect(html).toContain('href="#/doc/flows/refunds.md/call"');
+    expect(html).not.toMatch(/href="(javascript|data):/);
+    expect(html).toContain('<span>click</span>');
+    expect(html).toContain('href="https://example.com"');
     expect(html).toContain('src="files/img/logo.png"');
     expect(html).toContain('<figure class="diagram" data-key="spec.md#checkout-flow">');
     expect(html).not.toContain('owner: product');

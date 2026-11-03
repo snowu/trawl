@@ -116,7 +116,19 @@ const WRITE_TOOLS: ToolDef[] = [
   },
 ];
 
+/** Mermaid sources are parsed and laid out on the server: cap their size so one call can't eat the CPU. */
+const MAX_SOURCE = 50_000;
+
+/**
+ * Text from a caller that goes into an issue or PR body. HTML comments are neutralised so nobody can plant a
+ * `<!-- trawl:ref … -->` marker (which automation trusts) or hide text from reviewers.
+ */
+export function userText(s: string, max: number): string {
+  return s.slice(0, max).replace(/<!--/g, '&lt;!--').replace(/-->/g, '--&gt;');
+}
+
 function syntaxError(source: string): string | null {
+  if (source.length > MAX_SOURCE) return `the source is over ${MAX_SOURCE / 1000} KB`;
   try {
     parse(source);
     return null;
@@ -227,8 +239,8 @@ ${this.allowed('propose') || this.allowed('request') ? '- To change a diagram: d
   private async run(name: string, args: Json): Promise<ToolResult> {
     switch (name) {
       case 'search': {
-        const terms = String(args.query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
-        const limit = Number(args.limit) || 20;
+        const terms = String(args.query ?? '').slice(0, 500).toLowerCase().split(/\s+/).filter(Boolean).slice(0, 20);
+        const limit = Math.min(Math.max(Math.floor(Number(args.limit)) || 20, 1), 100);
         const hits: { score: number; line: string }[] = [];
         for (const doc of this.data.docs) {
           for (const s of doc.sections) {
@@ -271,7 +283,7 @@ ${this.allowed('propose') || this.allowed('request') ? '- To change a diagram: d
         return text(`${where}  (${this.siteLink(doc.path, sections.length === 1 ? sections[0].anchor : undefined)})\n\n${sections.map((s) => s.markdown).join('\n\n')}`);
       }
       case 'list_diagrams': {
-        const terms = String(args.query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+        const terms = String(args.query ?? '').slice(0, 500).toLowerCase().split(/\s+/).filter(Boolean).slice(0, 20);
         const list = this.data.diagrams.filter((d) => terms.every((t) => `${d.key} ${d.title} ${d.type ?? ''}`.toLowerCase().includes(t)));
         return text(list.length ? list.map((d) => `${d.key}\t${d.type ?? '?'}\t${d.title}${d.error ? '\t✗ broken' : ''}`).join('\n') : 'No diagrams found.');
       }
@@ -307,7 +319,8 @@ ${this.allowed('propose') || this.allowed('request') ? '- To change a diagram: d
         const d = this.data.diagrams.find((x) => x.doc === r.path && (!r.anchor || x.id === r.anchor));
         const key = d && (r.anchor || this.data.diagrams.filter((x) => x.doc === r.path).length === 1) ? d.key : `${r.path}${r.anchor ? `#${r.anchor}` : ''}`;
         this.doc(r.path);
-        const request = String(args.request ?? '').slice(0, 10_000);
+        const request = userText(String(args.request ?? ''), 10_000);
+        if (!request.trim()) return fail('Not filed: say what should change in `request`.');
         const body = [
           `**${d ? 'Diagram' : 'Doc'}:** \`${key}\` · [view](${this.siteLink(r.path, r.anchor ?? d?.id)})`,
           '',
@@ -325,7 +338,6 @@ ${this.allowed('propose') || this.allowed('request') ? '- To change a diagram: d
       case 'propose_change': {
         if (!this.allowed('propose')) return fail('not allowed: you need the propose role (or the server is read-only)');
         const source = String(args.source ?? '');
-        if (source.length > 50_000) return fail('Not proposed: the source is over 50 KB.');
         const err = syntaxError(source);
         if (err) return fail(`Not proposed, the new source doesn't parse:\n${err}`);
         const published = this.diagram(String(args.ref));
@@ -340,7 +352,7 @@ ${this.allowed('propose') || this.allowed('request') ? '- To change a diagram: d
         const head = (await this.github(`/git/ref/heads/${encodeURIComponent(branch)}`)) as { object: { sha: string } };
         const newBranch = `trawl/${published.id}-${Date.now().toString(36)}`;
         await this.github('/git/refs', { method: 'POST', body: { ref: `refs/heads/${newBranch}`, sha: head.object.sha } });
-        const summary = String(args.summary ?? '').trim() || `Update ${published.title}`;
+        const summary = userText(String(args.summary ?? '').trim(), 2000) || `Update ${published.title}`;
         await this.github(`/contents/${encodeURI(published.doc)}`, {
           method: 'PUT',
           body: { message: `${published.title}: ${summary}`.slice(0, 200), content: toBase64Utf8(next), sha: file.sha, branch: newBranch },
