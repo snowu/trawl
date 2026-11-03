@@ -244,7 +244,15 @@ jobs:
         # with: { site-url: https://you.github.io/repo/ }
 ```
 
-## Hosted: site + remote MCP for the whole team
+## Self-hosted in your cloud (AWS)
+
+`trawl serve` runs the review site and the MCP server as one hardened container behind company sign-in, for
+organisations that keep docs on their own infrastructure. It covers Google Workspace sign-in, personal MCP tokens
+for Claude Code and Claude Desktop, roles (read / request / propose), a GitHub App for reading and writing the
+docs repo, an audit log, and an ECS Fargate + internal ALB Terraform module. Setup, security model and runbook:
+[deploy/aws/README.md](deploy/aws/README.md).
+
+## Hosted on Cloudflare: site + remote MCP for the whole team
 
 [`worker/`](worker/README.md) deploys one Cloudflare Worker per docs repo that serves the review site at `/` and a
 remote MCP server at `/mcp`. Product and design add that URL to their Claude as a connector and can then ask it to
