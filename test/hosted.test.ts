@@ -8,7 +8,8 @@ import { b64url, sign, verify } from '../src/hosted/crypto.ts';
 import type { GitHubApi } from '../src/hosted/docs.ts';
 import { GitHubApp } from '../src/hosted/github-app.ts';
 import type { OidcEndpoints } from '../src/hosted/google.ts';
-import { createHandler, type Site } from '../src/hosted/server.ts';
+import { clientIp, createHandler, safeReturn, type Site } from '../src/hosted/server.ts';
+import { DocsServer, userText } from '../src/hosted/docs.ts';
 import { RepoSync, wanted } from '../src/hosted/sync.ts';
 import { buildSite } from '../src/site.ts';
 
@@ -27,7 +28,8 @@ describe('config', () => {
     const c = loadServeConfig(BASE_ENV);
     expect(c.port).toBe(8080);
     expect(c.sessionHours).toBe(8);
-    expect(c.tokenDays).toBe(30);
+    expect(c.tokenDays).toBe(14);
+    expect(c.proxyHops).toBe(1);
     expect(c.domains).toEqual(['corp.example']);
   });
 
@@ -117,7 +119,7 @@ async function signIn(a: ReturnType<typeof app>, claims: (nonce: string) => Reco
   const login = await a.call('/auth/login?return=/connect');
   const to = new URL(login.headers.get('location')!);
   pendingClaims = claims(to.searchParams.get('nonce')!);
-  return a.call(`/auth/callback?state=${to.searchParams.get('state')}&code=abc`, { headers: { cookie: cookieValue(login, 'trawl_login')! } });
+  return a.call(`/auth/callback?state=${to.searchParams.get('state')}&code=abc`, { headers: { cookie: cookieValue(login, '__Secure-trawl_login')! } });
 }
 
 const goodClaims = (nonce: string, extra: Record<string, unknown> = {}) => ({
@@ -146,12 +148,53 @@ describe('sign-in', () => {
     expect(login.headers.get('set-cookie')).toMatch(/HttpOnly; SameSite=Lax; Secure/);
   });
 
+  test('after sign-in, only paths on this server: no open redirects', async () => {
+    for (const bad of ['https://evil.example/', '//evil.example/', '/\\evil.example/', '/\\/evil.example', '/%0d%0aset-cookie:x', 'javascript:alert(1)', '/\t/evil.example']) {
+      const to = safeReturn(decodeURIComponent(bad));
+      expect(to.startsWith('/') && !to.startsWith('//')).toBe(true);
+      expect(new URL(to, 'https://trawl.corp.example').origin).toBe('https://trawl.corp.example');
+    }
+    expect(safeReturn('/connect?x=1#y')).toBe('/connect?x=1#y');
+    const a = app();
+    const login = await a.call('/auth/login?return=' + encodeURIComponent('/\\evil.example'));
+    pendingClaims = goodClaims(new URL(login.headers.get('location')!).searchParams.get('nonce')!);
+    const state = new URL(login.headers.get('location')!).searchParams.get('state');
+    const res = await a.call(`/auth/callback?state=${state}&code=abc`, { headers: { cookie: cookieValue(login, '__Secure-trawl_login')! } });
+    expect(res.headers.get('location')).toBe('/');
+  });
+
+  test('cookies use the __Host-/__Secure- prefixes; blocked people and pre-cutoff sessions are refused', async () => {
+    const a = app();
+    const res = await signIn(a, (n) => goodClaims(n));
+    const set = res.headers.getSetCookie().find((c) => c.startsWith('__Host-trawl_session='))!;
+    expect(set).toContain('Path=/;');
+    expect(set).toContain('Secure');
+    expect(set).not.toContain('Domain');
+    const cookie = cookieValue(res, '__Host-trawl_session')!;
+    expect((await a.call('/trawl.json', { headers: { cookie } })).status).toBe(200);
+    const blocked = app({ TRAWL_BLOCKED_USERS: 'Alice@corp.example' });
+    expect((await blocked.call('/trawl.json', { headers: { cookie } })).status).toBe(401);
+    expect((await signIn(blocked, (n) => goodClaims(n))).status).toBe(403);
+    const cutoff = app({ TRAWL_TOKENS_NOT_BEFORE: new Date(Date.now() + 1000).toISOString() });
+    expect((await cutoff.call('/trawl.json', { headers: { cookie } })).status).toBe(401);
+  });
+
+  test('failed sign-ins and bad tokens are rate limited per client address', async () => {
+    const a = app();
+    let last = 0;
+    for (let i = 0; i < 31; i++) last = (await a.call('/auth/callback?state=x&code=y')).status;
+    expect(last).toBe(429);
+    const b = app();
+    for (let i = 0; i < 31; i++) last = (await b.call('/mcp', { method: 'POST', headers: { authorization: 'Bearer trawl_nope.x' }, body: '{}' })).status;
+    expect(last).toBe(429);
+  });
+
   test('a good Workspace account gets a session and lands where it was going', async () => {
     const a = app();
     const res = await signIn(a, (n) => goodClaims(n));
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toBe('/connect');
-    expect(cookieValue(res, 'trawl_session')).toBeTruthy();
+    expect(cookieValue(res, '__Host-trawl_session')).toBeTruthy();
     expect(a.logs.some((l) => l.event === 'login' && l.user === 'alice@corp.example')).toBe(true);
   });
 
@@ -168,7 +211,7 @@ describe('sign-in', () => {
       const res = await signIn(app(), claims);
       expect(res.status).toBe(403);
       expect(await res.text()).toContain(why);
-      expect(cookieValue(res, 'trawl_session')).toBeUndefined();
+      expect(cookieValue(res, '__Host-trawl_session')).toBeUndefined();
     }
     const other = (await crypto.subtle.generateKey({ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['sign', 'verify'])) as CryptoKeyPair;
     const a = app();
@@ -176,7 +219,7 @@ describe('sign-in', () => {
     const to = new URL(login.headers.get('location')!);
     const forged = await idToken(goodClaims(to.searchParams.get('nonce')!), other.privateKey);
     const handler = createHandler({ config: a.config, site: () => site, oidc: OIDC, log: () => {}, fetchImpl: (async (u: string | URL | Request) => (String(u) === OIDC.token ? Response.json({ id_token: forged }) : fakeGoogle(u))) as typeof fetch });
-    const res = await handler(new Request(`https://trawl.corp.example/auth/callback?state=${to.searchParams.get('state')}&code=x`, { headers: { cookie: cookieValue(login, 'trawl_login')! } }));
+    const res = await handler(new Request(`https://trawl.corp.example/auth/callback?state=${to.searchParams.get('state')}&code=x`, { headers: { cookie: cookieValue(login, '__Secure-trawl_login')! } }));
     expect(res.status).toBe(403);
     expect(await res.text()).toContain('bad signature');
   });
@@ -185,14 +228,14 @@ describe('sign-in', () => {
     const a = app();
     expect((await a.call('/auth/callback?state=x&code=y')).status).toBe(400);
     const login = await a.call('/auth/login');
-    expect((await a.call('/auth/callback?state=other&code=y', { headers: { cookie: cookieValue(login, 'trawl_login')! } })).status).toBe(400);
+    expect((await a.call('/auth/callback?state=other&code=y', { headers: { cookie: cookieValue(login, '__Secure-trawl_login')! } })).status).toBe(400);
   });
 });
 
 describe('site, tokens and MCP', () => {
   async function session(a: ReturnType<typeof app>, email = 'alice@corp.example') {
     const res = await signIn(a, (n) => goodClaims(n, { email }));
-    return cookieValue(res, 'trawl_session')!;
+    return cookieValue(res, '__Host-trawl_session')!;
   }
 
   async function token(a: ReturnType<typeof app>, cookie: string) {
@@ -271,10 +314,58 @@ describe('site, tokens and MCP', () => {
     expect((await rpc(otherDomain, tok, { jsonrpc: '2.0', id: 1, method: 'ping' })).status).toBe(401);
   });
 
+  test('files from the docs repo can never run script: sandboxed CSP, images only', async () => {
+    const a = app();
+    const cookie = await session(a);
+    const json = await a.call('/trawl.json', { headers: { cookie } });
+    expect(json.headers.get('content-security-policy')).toContain('sandbox');
+    expect(json.headers.get('content-security-policy')).toContain("default-src 'none'");
+    for (const p of ['/files/evil.html', '/files/x.js', '/d/abc.html']) expect((await a.call(p, { headers: { cookie } })).status).toBe(404);
+    expect((await a.call('/%E0%A4%A', { headers: { cookie } })).status).toBe(400);
+  });
+
+  test('MCP refuses browser requests from other origins (DNS rebinding)', async () => {
+    const a = app();
+    const tok = await token(a, await session(a));
+    const res = await a.call('/mcp', { method: 'POST', headers: { authorization: `Bearer ${tok}`, origin: 'http://evil.example', 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }) });
+    expect(res.status).toBe(403);
+  });
+
   test('healthz needs no auth and says nothing sensitive', async () => {
     const res = await app().call('/healthz');
     expect(res.status).toBe(200);
     expect(Object.keys(await res.json()).sort()).toEqual(['docs', 'ok', 'version']);
+  });
+});
+
+describe('hardening helpers', () => {
+  test('client address: the entry the ALB appended, not one the client sent', () => {
+    expect(clientIp('6.6.6.6, 10.1.2.3', '10.0.0.5', 1)).toBe('10.1.2.3');
+    expect(clientIp('10.1.2.3', '10.0.0.5', 1)).toBe('10.1.2.3');
+    expect(clientIp('6.6.6.6, 10.1.2.3, 10.9.9.9', '10.0.0.5', 2)).toBe('10.1.2.3');
+    expect(clientIp('6.6.6.6', '10.0.0.5', 0)).toBe('10.0.0.5');
+    expect(clientIp(null, '10.0.0.5', 1)).toBe('10.0.0.5');
+  });
+
+  test('caller text in issues and PRs cannot plant hidden markers', () => {
+    expect(userText('ok <!-- trawl:ref evil.md#x --> done', 100)).toBe('ok &lt;!-- trawl:ref evil.md#x --&gt; done');
+    expect(userText('x'.repeat(50), 10)).toHaveLength(10);
+  });
+
+  test('change requests: hidden markers neutralised; oversized Mermaid refused before parsing', async () => {
+    const calls: { path: string; body?: unknown }[] = [];
+    const github: GitHubApi = async (path, init) => {
+      calls.push({ path, body: init?.body });
+      return { html_url: 'https://github.com/o/r/issues/1' };
+    };
+    const server = new DocsServer({ origin: 'https://t', data: site.data, asset: async () => null, github, repo: 'o/r', user: { email: 'a@corp.example', roles: new Set(['request', 'propose']) } });
+    const doc = site.data.docs[0].path;
+    await server.call('request_change', { ref: doc, request: 'please <!-- trawl:ref other.md#x -->' });
+    const body = String((calls[0].body as { body: string }).body);
+    expect(body.match(/<!-- trawl:ref/g)).toHaveLength(1);
+    const big = await server.call('check', { source: 'flowchart TD\n' + 'A-->B\n'.repeat(20_000) });
+    expect(big.isError).toBe(true);
+    expect(JSON.stringify(big.content)).toContain('over 50 KB');
   });
 });
 

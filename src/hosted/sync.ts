@@ -11,6 +11,8 @@ const DOC = /\.(md|mmd)$/i;
 const IMAGE = /\.(png|jpe?g|gif|svg|webp)$/i;
 const MAX_FILE = 2 * 1024 * 1024;
 const MAX_FILES = 5000;
+/** Blobs are kept in memory between syncs: cap the total so a huge repo can't exhaust the task's memory. */
+const MAX_TOTAL = 256 * 1024 * 1024;
 
 export interface SiteBuild {
   dir: string;
@@ -54,7 +56,14 @@ export class RepoSync {
       if (this.current?.commit === commit) return false;
       const tree = (await this.github(`/git/trees/${commit}?recursive=1`)) as { tree: TreeEntry[]; truncated?: boolean };
       if (tree.truncated) this.log({ kind: 'sync', warning: 'repo tree truncated by GitHub; some files may be missing' });
-      const files = tree.tree.filter((e) => e.type === 'blob' && wanted(e.path, this.repo.paths) && (e.size ?? 0) <= MAX_FILE).slice(0, MAX_FILES);
+      let total = 0;
+      const files = tree.tree
+        .filter((e) => e.type === 'blob' && wanted(e.path, this.repo.paths) && (e.size ?? 0) <= MAX_FILE)
+        .slice(0, MAX_FILES)
+        // Docs first, so if the cap bites it drops images, not text.
+        .sort((a, b) => Number(IMAGE.test(a.path)) - Number(IMAGE.test(b.path)))
+        .filter((e) => (total += e.size ?? 0) <= MAX_TOTAL);
+      if (total > MAX_TOTAL) this.log({ kind: 'sync', warning: `docs exceed ${MAX_TOTAL >> 20} MB; some files were left out` });
 
       const missing = files.filter((f) => !this.blobs.has(f.sha));
       for (let i = 0; i < missing.length; i += 8) {

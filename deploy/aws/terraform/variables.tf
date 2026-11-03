@@ -62,9 +62,33 @@ variable "alb_access_logs_bucket" {
 }
 
 variable "waf_acl_arn" {
-  description = "Regional WAFv2 web ACL to attach to the ALB; empty for none."
+  description = "Your own regional WAFv2 web ACL to attach to the ALB instead of the one this module creates."
   type        = string
   default     = ""
+}
+
+variable "create_waf" {
+  description = "Create a WAF web ACL (AWS managed rules, per-address rate limit, logged with tokens and cookies redacted) when waf_acl_arn is empty."
+  type        = bool
+  default     = true
+}
+
+variable "waf_rate_limit" {
+  description = "Requests per 5 minutes from one address before the WAF blocks it. Behind a VPN that NATs everyone to one address, raise it."
+  type        = number
+  default     = 3000
+}
+
+variable "egress_cidrs" {
+  description = "Where tasks may connect on 443. Set to your egress proxy / firewall ranges to stop them reaching anything else; the default relies on an egress firewall (README)."
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+}
+
+variable "egress_prefix_list_ids" {
+  description = "Prefix lists tasks may reach on 443 too (e.g. the S3 gateway endpoint's, for ECR image layers)."
+  type        = list(string)
+  default     = []
 }
 
 # ── Runtime ──────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -172,15 +196,25 @@ variable "session_hours" {
 }
 
 variable "token_days" {
-  description = "Lifetime of personal MCP tokens."
+  description = "Lifetime of personal MCP tokens (they sit in plain text in people's Claude config: keep it short)."
   type        = number
-  default     = 30
+  default     = 14
+  validation {
+    condition     = var.token_days >= 1 && var.token_days <= 90
+    error_message = "token_days: 1 to 90."
+  }
 }
 
 variable "tokens_not_before" {
   description = "ISO timestamp: tokens issued before it stop working (revoke everyone, e.g. after an incident)."
   type        = string
   default     = ""
+}
+
+variable "blocked_users" {
+  description = "Emails refused outright: their sessions and tokens stop working and they can't sign in (offboarding, incidents)."
+  type        = list(string)
+  default     = []
 }
 
 variable "revoked_tokens" {

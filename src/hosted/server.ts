@@ -31,6 +31,7 @@ export interface ServerDeps {
 
 interface Session {
   email: string;
+  iat: number;
   exp: number;
 }
 
@@ -44,14 +45,19 @@ interface McpToken {
 const TOKEN_PREFIX = 'trawl_';
 const MCP_BODY_LIMIT = 1024 * 1024;
 
-/** Calls per user per window; writes have their own, smaller budget. */
+/** Calls per key (user or client address) per window. Keys that went quiet are dropped, so memory stays bounded. */
 class RateLimiter {
   private hits = new Map<string, number[]>();
+  private sweptAt = 0;
   constructor(
     private max: number,
     private windowMs: number,
   ) {}
   allow(key: string, now = Date.now()): boolean {
+    if (now - this.sweptAt > this.windowMs) {
+      for (const [k, ts] of this.hits) if (!ts.length || now - ts[ts.length - 1] >= this.windowMs) this.hits.delete(k);
+      this.sweptAt = now;
+    }
     const recent = (this.hits.get(key) ?? []).filter((t) => now - t < this.windowMs);
     if (recent.length >= this.max) {
       this.hits.set(key, recent);
@@ -77,9 +83,40 @@ function readCookie(req: Request, name: string): string | undefined {
   return undefined;
 }
 
-/** Headers every response gets. Pages add their CSP (with hashes for the site's inline script and style). */
+/**
+ * Where to send someone after sign-in: a path on this server, nothing else. Rejects other origins, `//host`, and
+ * `/\host` (browsers read a backslash as a slash), and control characters.
+ */
+export function safeReturn(ret: string | null | undefined): string {
+  if (!ret || !ret.startsWith('/') || /[\\\x00-\x1f\x7f]/.test(ret)) return '/';
+  try {
+    const u = new URL(ret, 'https://trawl.invalid');
+    return u.origin === 'https://trawl.invalid' ? u.pathname + u.search + u.hash : '/';
+  } catch {
+    return '/';
+  }
+}
+
+/**
+ * The client address for the audit log. The ALB appends the address it saw to X-Forwarded-For, so the trustworthy
+ * entry is `hops` from the right; anything to the left of it was sent by the client and can be forged.
+ */
+export function clientIp(xff: string | null, socket: string, hops: number): string {
+  if (!hops || !xff) return socket;
+  const parts = xff.split(',').map((p) => p.trim()).filter(Boolean);
+  return parts[parts.length - hops] ?? socket;
+}
+
+/**
+ * Any response that isn't one of our pages: nothing in it may run or load anything (`sandbox` also gives it an
+ * opaque origin). This is what makes an SVG or HTML file from the docs repo harmless when opened directly.
+ */
+const FILE_CSP = "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; frame-ancestors 'none'; sandbox";
+
+/** Headers every response gets. Pages replace the CSP with theirs (hashes for the site's inline script and style). */
 function baseHeaders(secure: boolean): Record<string, string> {
   return {
+    'content-security-policy': FILE_CSP,
     'x-content-type-options': 'nosniff',
     'x-frame-options': 'DENY',
     'referrer-policy': 'no-referrer',
@@ -130,6 +167,12 @@ export function createHandler(deps: ServerDeps): (req: Request, ip?: string) => 
   const redirectUri = `${base}/auth/callback`;
   const mcpLimiter = new RateLimiter(240, 60_000);
   const writeLimiter = new RateLimiter(20, 3600_000);
+  // Per client address: sign-in starts, and failed sign-ins / bad tokens (guessing, scanners, a leaked-token storm).
+  const loginLimiter = new RateLimiter(30, 60_000);
+  const failureLimiter = new RateLimiter(30, 60_000);
+  // __Host- cookies must be Secure, Path=/ and host-only: nothing on a sibling subdomain can set or shadow them.
+  const SESSION = secure ? '__Host-trawl_session' : 'trawl_session';
+  const LOGIN = secure ? '__Secure-trawl_login' : 'trawl_login';
   let siteCache: { dir: string; html: string; csp: string } | undefined;
 
   const respond = (body: BodyInit | null, status: number, headers: Record<string, string> = {}) =>
@@ -140,6 +183,10 @@ export function createHandler(deps: ServerDeps): (req: Request, ip?: string) => 
     respond(JSON.stringify(body), status, { 'content-type': 'application/json', ...headers });
 
   const domainAllowed = (email: string) => config.domains.some((d) => email.endsWith(`@${d}`));
+  /** Still allowed in: the domain is allowed, the person isn't blocked, and the credential predates no cut-off. */
+  const stillAllowed = (email: string, iat: number) => domainAllowed(email) && !config.blockedUsers.has(email) && iat >= config.tokensNotBefore;
+  const tooManyFailures = (ip: string) =>
+    failureLimiter.allow(ip) ? null : json({ error: 'too many failed attempts; wait a minute' }, 429, { 'retry-after': '60' });
 
   const rolesFor = (email: string): Set<Role> => {
     const roles = new Set<Role>();
@@ -149,17 +196,17 @@ export function createHandler(deps: ServerDeps): (req: Request, ip?: string) => 
   };
 
   async function session(req: Request): Promise<Session | null> {
-    const raw = readCookie(req, 'trawl_session');
+    const raw = readCookie(req, SESSION);
     if (!raw) return null;
     const s = await verify<Session>(config.secret, 'session', raw);
-    return s && s.exp > Date.now() && domainAllowed(s.email) ? s : null;
+    return s && typeof s.iat === 'number' && s.exp > Date.now() && stillAllowed(s.email, s.iat) ? s : null;
   }
 
   async function mcpUser(req: Request): Promise<User | null> {
     const raw = req.headers.get('authorization')?.match(/^Bearer\s+(\S+)$/i)?.[1];
     if (!raw) return null;
     const t = await verify<McpToken>(config.secret, 'mcp-token', raw, TOKEN_PREFIX);
-    if (!t || t.exp <= Date.now() || t.iat < config.tokensNotBefore || config.revokedTokens.has(t.jti) || !domainAllowed(t.sub)) return null;
+    if (!t || t.exp <= Date.now() || config.revokedTokens.has(t.jti) || !stillAllowed(t.sub, t.iat)) return null;
     return { email: t.sub, roles: rolesFor(t.sub) };
   }
 
@@ -170,7 +217,12 @@ export function createHandler(deps: ServerDeps): (req: Request, ip?: string) => 
   async function serveSite(req: Request, url: URL): Promise<Response> {
     const site = deps.site();
     if (!site) return html(page('Not ready', '<h1>Docs are still loading</h1><p>The first sync from GitHub hasn\'t finished. Try again in a minute.</p>'), 503, { 'retry-after': '30' });
-    const path = decodeURIComponent(url.pathname);
+    let path: string;
+    try {
+      path = decodeURIComponent(url.pathname);
+    } catch {
+      return respond('bad path', 400);
+    }
     if (path === '/' || path === '/index.html') {
       if (siteCache?.dir !== site.dir) {
         const { html: out, csp } = await sitePage(await Bun.file(join(site.dir, 'index.html')).text());
@@ -179,7 +231,7 @@ export function createHandler(deps: ServerDeps): (req: Request, ip?: string) => 
       return respond(siteCache.html, 200, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': siteCache.csp });
     }
     const rel = normalize(path).replace(/^\/+/, '');
-    if (rel.startsWith('..') || rel.includes('\0') || !/^(trawl\.json|d\/[\w.-]+|files\/[^?#]+)$/.test(rel)) return respond('not found', 404);
+    if (rel.startsWith('..') || rel.includes('\0') || !/^(trawl\.json|d\/[\w.-]+\.(svg|png)|files\/[^?#]+\.(png|jpe?g|gif|svg|webp))$/i.test(rel)) return respond('not found', 404);
     const file = Bun.file(join(site.dir, rel));
     if (!(await file.exists())) return respond('not found', 404);
     // Diagram renders are content-addressed; cache them privately. Everything else stays no-store.
@@ -213,30 +265,34 @@ ${tokenBlock}
       if (path === '/healthz') return json({ ok: true, version: pkg.version, docs: deps.site() ? 'ready' : 'loading' });
 
       if (path === '/auth/login' && req.method === 'GET') {
-        const ret = url.searchParams.get('return') ?? '/';
-        const returnTo = ret.startsWith('/') && !ret.startsWith('//') ? ret : '/';
+        if (!loginLimiter.allow(ip)) return html(page('Slow down', '<h1>Too many sign-in attempts</h1><p>Wait a minute and try again.</p>'), 429, { 'retry-after': '60' });
+        const returnTo = safeReturn(url.searchParams.get('return'));
         const { url: to, login } = await startLogin(config.google.clientId, redirectUri, config.domains, returnTo, deps.oidc ?? GOOGLE);
-        return respond(null, 302, { location: to, 'set-cookie': cookie('trawl_login', await sign(config.secret, 'login', login), { maxAge: 600, path: '/auth', secure }) });
+        return respond(null, 302, { location: to, 'set-cookie': cookie(LOGIN, await sign(config.secret, 'login', login), { maxAge: 600, path: '/auth', secure }) });
       }
 
       if (path === '/auth/callback' && req.method === 'GET') {
-        const raw = readCookie(req, 'trawl_login');
+        const limited = tooManyFailures(ip);
+        if (limited) return limited;
+        const raw = readCookie(req, LOGIN);
         const login = raw ? await verify<LoginState>(config.secret, 'login', raw) : null;
         const state = url.searchParams.get('state') ?? '';
         const code = url.searchParams.get('code') ?? '';
-        const clear = cookie('trawl_login', '', { maxAge: 0, path: '/auth', secure });
+        const clear = cookie(LOGIN, '', { maxAge: 0, path: '/auth', secure });
         if (!login || login.exp < Date.now() || !safeEqual(login.state, state) || !code) {
           log({ kind: 'auth', event: 'denied', reason: 'bad or expired login state', ip });
           return html(page('Sign-in failed', '<h1>Sign-in failed</h1><p>The sign-in link expired or was used already. <a href="/auth/login">Try again</a>.</p>'), 400, { 'set-cookie': clear });
         }
         try {
           const who = await finishLogin({ ...config.google, redirectUri, domains: config.domains }, login, code, deps.oidc ?? GOOGLE, deps.fetchImpl ?? fetch);
-          const s: Session = { email: who.email, exp: Date.now() + config.sessionHours * 3600_000 };
+          if (config.blockedUsers.has(who.email)) throw new Error('this account is blocked from trawl');
+          const now = Date.now();
+          const s: Session = { email: who.email, iat: now, exp: now + config.sessionHours * 3600_000 };
           log({ kind: 'auth', event: 'login', user: who.email, ip });
           const headers = new Headers(baseHeaders(secure));
-          headers.set('location', login.returnTo);
+          headers.set('location', safeReturn(login.returnTo));
           headers.append('set-cookie', clear);
-          headers.append('set-cookie', cookie('trawl_session', await sign(config.secret, 'session', s), { maxAge: config.sessionHours * 3600, secure }));
+          headers.append('set-cookie', cookie(SESSION, await sign(config.secret, 'session', s), { maxAge: config.sessionHours * 3600, secure }));
           return new Response(null, { status: 302, headers });
         } catch (e) {
           const reason = e instanceof Error ? e.message : String(e);
@@ -246,12 +302,17 @@ ${tokenBlock}
       }
 
       if (path === '/auth/logout' && req.method === 'POST') {
-        return respond(null, 303, { location: '/', 'set-cookie': cookie('trawl_session', '', { maxAge: 0, secure }) });
+        return respond(null, 303, { location: '/', 'set-cookie': cookie(SESSION, '', { maxAge: 0, secure }) });
       }
 
       if (path === '/mcp' || path.startsWith('/mcp/')) {
+        // MCP clients don't send Origin; a browser does. A web page must never drive this endpoint (DNS rebinding).
+        const origin = req.headers.get('origin');
+        if (origin && origin !== base) return json({ error: 'cross-origin requests are not allowed' }, 403);
         const user = await mcpUser(req);
         if (!user) {
+          const limited = tooManyFailures(ip);
+          if (limited) return limited;
           log({ kind: 'mcp', event: 'unauthorized', ip });
           return json({ error: 'unauthorized', hint: `create a personal token at ${base}/connect` }, 401, { 'www-authenticate': 'Bearer realm="trawl", error="invalid_token"' });
         }
@@ -349,8 +410,8 @@ export async function runServe(env = process.env): Promise<void> {
     hostname: '0.0.0.0',
     maxRequestBodySize: 2 * 1024 * 1024,
     fetch(req, srv) {
-      // Behind the ALB the client address is the first X-Forwarded-For entry.
-      const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || srv.requestIP(req)?.address || '';
+      // Behind the ALB, the address it appended to X-Forwarded-For (TRAWL_PROXY_HOPS from the right).
+      const ip = clientIp(req.headers.get('x-forwarded-for'), srv.requestIP(req)?.address ?? '', config.proxyHops);
       return handler(req, ip);
     },
   });

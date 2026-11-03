@@ -1,0 +1,11 @@
+# Actions and base images are pinned by SHA/digest; Dependabot proposes the bumps as PRs.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories: ["/", "/actions/pr-diff", "/actions/site"]
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
