@@ -122,6 +122,8 @@ function renderDoc(doc: Doc, raw: string, path: string, keyFor: (d: Diagram) => 
         const inner = this.parser.parseInline(tokens);
         const t = title ? ` title="${escapeHtml(title)}"` : '';
         if (/^[a-z][\w+.-]*:/i.test(href) || href.startsWith('#') || href.startsWith('//')) {
+          // Only web and mail links; javascript:, data: and friends become plain text.
+          if (/^[a-z][\w+.-]*:/i.test(href) && !/^(https?|mailto):/i.test(href)) return `<span>${inner}</span>`;
           const target = href.startsWith('#') ? `#/doc/${path}/${href.slice(1)}` : href;
           return `<a href="${escapeHtml(target)}"${t}${href.startsWith('#') ? '' : ' rel="noopener" target="_blank"'}>${inner}</a>`;
         }

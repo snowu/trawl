@@ -24,20 +24,21 @@ through a **GitHub App** owned by your org.
 
 | Concern | Control |
 |---|---|
-| Network exposure | Internal ALB only; its security group admits `allowed_cidrs` (VPN/office) on 443 (80 redirects). Tasks accept traffic only from the ALB. No public IPs. |
-| Transport | TLS 1.2/1.3 (`ELBSecurityPolicy-TLS13-1-2-2021-06`); HSTS; ALB drops invalid headers, strictest desync mitigation; optional WAF. |
+| Network exposure | Internal ALB only; its security group admits `allowed_cidrs` (VPN/office) on 443 (80 redirects). Tasks accept traffic only from the ALB. No public IPs. Tasks reach out on 443 only, to `egress_cidrs` / `egress_prefix_list_ids` (set them to your proxy or firewall). |
+| Transport | TLS 1.2/1.3 (`ELBSecurityPolicy-TLS13-1-2-2021-06`); HSTS; ALB drops invalid headers, strictest desync mitigation. |
+| WAF | Created by default: a per-address rate limit (`waf_rate_limit` per 5 minutes), AWS known-bad-inputs rules everywhere, and the AWS common rule set on the browser paths (`/mcp` is excluded: it only takes authenticated JSON, and Mermaid trips the XSS rules). Logged to `aws-waf-logs-<name>` with the `authorization` and `cookie` headers redacted. Bring your own with `waf_acl_arn`. |
 | Who gets in (browser) | Google OIDC authorization-code flow with PKCE, `state` and `nonce`. The ID token's signature (Google JWKS), issuer, audience, expiry and nonce are verified, plus `email_verified` and the Workspace domain (`hd`) against `allowed_domains`. Personal Gmail accounts have no `hd` and are refused. |
-| Sessions | HMAC-SHA256-signed cookie, `HttpOnly; Secure; SameSite=Lax`, `session_hours` (default 8h). Nothing stored server-side. |
-| Who gets in (Claude) | Personal MCP tokens, created by a signed-in user on `/connect` (CSRF-protected form) and shown once. HMAC-signed (separate key from sessions), carrying email, issue time, expiry (`token_days`, default 30) and an id (`jti`). Checked on every call, together with the allowed domain. |
-| Revocation | One token: add its `jti` (from the `token-issued` log line) to `revoked_tokens`. Everyone: set `tokens_not_before` to now. Everything incl. sessions: rotate `TRAWL_SECRET`. Each is a redeploy. |
+| Sessions | HMAC-SHA256-signed `__Host-` cookie (`HttpOnly; Secure; SameSite=Lax; Path=/`, no domain, so no sibling subdomain can set or read it), `session_hours` (default 8h). Nothing stored server-side. After sign-in people only ever go to a path on this server (no open redirects). |
+| Who gets in (Claude) | Personal MCP tokens, created by a signed-in user on `/connect` (CSRF-protected form) and shown once. HMAC-signed (separate key from sessions), carrying email, issue time, expiry (`token_days`, default 14, at most 90) and an id (`jti`). Checked on every call, together with the allowed domain. |
+| Revocation | One person: add their email to `blocked_users`: their sessions and tokens stop working and they can't sign in again. One token: add its `jti` (from the `token-issued` log line) to `revoked_tokens`. Everyone: set `tokens_not_before` to now (signs out sessions too). Last resort: rotate `TRAWL_SECRET`. Each is an apply (a redeploy, about a minute). |
 | What people may do | Everyone signed in: read, search, render. `requesters`: also file change requests (GitHub issues). `proposers`: also open pull requests. Roles are read from config on every call, so removing someone takes effect on the next deploy, without waiting for their token to expire. |
 | Writes | Only through the GitHub App: repo-scoped, permissions you grant, tokens valid for 1 hour. Issues and PRs say who asked (`Requested by alice@…`). PRs go through your normal review and branch protection; nothing is merged automatically. |
-| Abuse | 240 MCP calls/min and 20 writes/hour per person; 1 MB request limit; at most 20 messages per batch. |
-| Browser hardening | CSP: scripts and styles allowed only by hash of the exact inline app, no external origins, `frame-ancestors 'none'`. Raw HTML in markdown is rendered as text. `X-Frame-Options: DENY`, `nosniff`, `no-referrer`, COOP/CORP, `no-store`. |
+| Abuse | Per person: 240 MCP calls/min, 20 writes/hour. Per client address: 30 sign-in starts and 30 failed sign-ins or bad tokens a minute. 1 MB request limit, at most 20 messages per batch, Mermaid sources capped at 50 KB before parsing, search capped at 100 results. Text people send into issues and PRs can't plant hidden `<!-- -->` markers. Docs synced into memory are capped at 256 MB. |
+| Browser hardening | Pages: CSP allows scripts and styles only by hash of the exact inline app, no external origins, `frame-ancestors 'none'`. Everything else (images, `trawl.json`) gets `default-src 'none'; sandbox`, so an SVG committed to the docs repo can't run script even when opened directly; only image files are served from the repo. Raw HTML in markdown is rendered as text, and links other than http(s)/mailto become plain text. `/mcp` refuses requests carrying another site's `Origin` (DNS rebinding). `X-Frame-Options: DENY`, `nosniff`, `no-referrer`, COOP/CORP, `no-store`. |
 | Container | Distroless base (no shell, no package manager), single compiled binary, UID 65532, read-only root filesystem, all Linux capabilities dropped, `/tmp` is a task-local volume. The task role has **no** AWS permissions. The execution role can pull this image, read one secret and write one log group. |
 | Secrets | One Secrets Manager secret (optionally CMK-encrypted), injected as env vars by ECS. Terraform creates the secret but never its value, so values never reach Terraform state. |
-| Audit | JSON lines to CloudWatch: `kind=auth` (login, denied with reason, token-issued with jti and expiry), `kind=audit` (every MCP tool call: user, tool, ref, ok, outcome of writes, client IP), `kind=sync`. Retention `log_retention_days` (default 365). |
-| Supply chain | Image pinned by digest (`@sha256:`; Terraform refuses tags), ECR with immutable tags and scan on push. App dependencies are pinned in `bun.lock`. |
+| Audit | JSON lines to CloudWatch: `kind=auth` (login, denied with reason, token-issued with jti and expiry), `kind=audit` (every MCP tool call: user, tool, ref, ok, outcome of writes, client IP), `kind=sync`. The client IP is the one the ALB appended to `X-Forwarded-For`, not one the client can forge. Retention `log_retention_days` (default 365). |
+| Supply chain | Image pinned by digest (`@sha256:`; Terraform refuses tags), ECR with immutable tags and scan on push. The Dockerfile's base images are pinned by digest, the GitHub Actions by commit SHA, and Dependabot proposes bumps. CI is read-only except the release job. App dependencies are pinned in `bun.lock`. |
 
 ### Known limits of the proof of concept
 
@@ -96,6 +97,7 @@ module "trawl" {
   hostname           = "trawl.internal.example.com"
   route53_zone_id    = "Z..."                    # private zone, optional
   image              = "<account>.dkr.ecr.<region>.amazonaws.com/trawl-docs@sha256:..."
+  egress_cidrs       = ["10.20.0.0/24"]         # your egress proxy / firewall
 
   allowed_domains  = ["example.com"]
   google_client_id = "....apps.googleusercontent.com"
@@ -128,8 +130,9 @@ The task needs outbound HTTPS to:
 | `api.github.com` | docs sync, issues and PRs through the App |
 | ECR (`api`, `dkr`), S3 (image layers), CloudWatch Logs, Secrets Manager | image pull, logs, secrets: via NAT, or VPC endpoints |
 
-The task security group allows 443 out. Restrict it to these hosts at your egress firewall or proxy (e.g. AWS Network
-Firewall with a domain allowlist).
+Security groups can't filter by hostname. Set `egress_cidrs` to your egress proxy or firewall (and
+`egress_prefix_list_ids` to VPC endpoint prefix lists), and allow only these hosts there (e.g. AWS Network Firewall
+with a domain allowlist). The default, `0.0.0.0/0` on 443, relies on that firewall.
 
 ### 6. Testers
 
@@ -145,11 +148,11 @@ support: file that as a change request", and so on.
 
 | Task | How |
 |---|---|
-| Offboard someone | Remove them from Google Workspace (no new sessions). Add their token `jti`s (`kind=auth event=token-issued user=…` in the logs) to `revoked_tokens`, or set `tokens_not_before`, then apply. |
+| Offboard someone | Remove them from Google Workspace, and add their email to `blocked_users` and apply: their sessions and tokens stop working at once. |
 | Suspected token leak | Set `tokens_not_before` to now and apply. Everyone creates a new token on `/connect`. |
 | Rotate `TRAWL_SECRET` | Put a new value in the secret, then force a new deployment. Every session and token stops working at once. |
 | Rotate the GitHub App key | Generate a new key in the App settings, put it in the secret, redeploy, then delete the old key in GitHub. |
 | Rotate the Google client secret | Add a new secret in the Google console, put it in the secret, redeploy, then delete the old one in Google. |
 | Who did what | CloudWatch Logs Insights on the log group: `filter kind = "audit" \| fields ts, user, tool, ref, ok, detail \| sort ts desc` |
 | Docs look stale | `filter kind = "sync"` shows each sync (commit, counts) or its error. The interval is `sync_minutes` (default 10). A failed sync keeps serving the last good build. |
-| Run it locally | `TRAWL_INSECURE_DEV=1 TRAWL_PUBLIC_URL=http://localhost:8080 TRAWL_SITE_DIR=./site … trawl serve` (`trawl site -o site` to build one; http is only allowed for localhost). |
+| Run it locally | `TRAWL_INSECURE_DEV=1 TRAWL_PROXY_HOPS=0 TRAWL_PUBLIC_URL=http://localhost:8080 TRAWL_SITE_DIR=./site … trawl serve` (`trawl site -o site` to build one; http is only allowed for localhost). |

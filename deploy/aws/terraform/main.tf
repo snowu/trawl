@@ -172,12 +172,23 @@ resource "aws_vpc_security_group_ingress_rule" "task_from_alb" {
 # accounts.google.com, oauth2.googleapis.com, www.googleapis.com, api.github.com (plus ECR, Logs, Secrets Manager,
 # or use VPC endpoints for those). See README.
 resource "aws_vpc_security_group_egress_rule" "task_https_out" {
+  for_each          = toset(var.egress_cidrs)
   security_group_id = aws_security_group.task.id
-  cidr_ipv4         = "0.0.0.0/0"
+  cidr_ipv4         = each.value
   ip_protocol       = "tcp"
   from_port         = 443
   to_port           = 443
-  description       = "HTTPS to Google sign-in, GitHub API and AWS APIs (restrict at the egress firewall)"
+  description       = "HTTPS to Google sign-in, GitHub API and AWS APIs"
+}
+
+resource "aws_vpc_security_group_egress_rule" "task_https_prefix_lists" {
+  for_each          = toset(var.egress_prefix_list_ids)
+  security_group_id = aws_security_group.task.id
+  prefix_list_id    = each.value
+  ip_protocol       = "tcp"
+  from_port         = 443
+  to_port           = 443
+  description       = "HTTPS to AWS endpoints"
 }
 
 resource "aws_lb" "trawl" {
@@ -245,10 +256,135 @@ resource "aws_lb_listener" "http_redirect" {
   tags = local.tags
 }
 
+# ── WAF: AWS managed rules plus a per-address rate limit, in front of everything ────────────────────────────────
+
+locals {
+  create_waf = var.waf_acl_arn == "" && var.create_waf
+}
+
+resource "aws_wafv2_web_acl" "trawl" {
+  count       = local.create_waf ? 1 : 0
+  name        = var.name
+  description = "trawl: managed rules and rate limiting"
+  scope       = "REGIONAL"
+  default_action {
+    allow {}
+  }
+
+  rule {
+    name     = "rate-limit-per-address"
+    priority = 0
+    action {
+      block {}
+    }
+    statement {
+      rate_based_statement {
+        limit              = var.waf_rate_limit
+        aggregate_key_type = "IP"
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name}-rate"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # Known exploit payloads (Log4Shell and friends) on every path.
+  rule {
+    name     = "known-bad-inputs"
+    priority = 1
+    override_action {
+      none {}
+    }
+    statement {
+      managed_rule_group_statement {
+        vendor_name = "AWS"
+        name        = "AWSManagedRulesKnownBadInputsRuleSet"
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name}-bad-inputs"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # The common rule set (XSS, LFI, bad bots...) on the browser-facing paths. /mcp is left out: it only takes
+  # authenticated JSON whose Mermaid and prose would trip the XSS and body-size rules.
+  rule {
+    name     = "common"
+    priority = 2
+    override_action {
+      none {}
+    }
+    statement {
+      managed_rule_group_statement {
+        vendor_name = "AWS"
+        name        = "AWSManagedRulesCommonRuleSet"
+        scope_down_statement {
+          not_statement {
+            statement {
+              byte_match_statement {
+                search_string         = "/mcp"
+                positional_constraint = "STARTS_WITH"
+                field_to_match {
+                  uri_path {}
+                }
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name}-common"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = var.name
+    sampled_requests_enabled   = true
+  }
+  tags = local.tags
+}
+
+# WAF logs need this name prefix. Tokens and cookies are redacted before they're written.
+resource "aws_cloudwatch_log_group" "waf" {
+  count             = local.create_waf ? 1 : 0
+  name              = "aws-waf-logs-${var.name}"
+  retention_in_days = var.log_retention_days
+  kms_key_id        = var.kms_key_arn == "" ? null : var.kms_key_arn
+  tags              = local.tags
+}
+
+resource "aws_wafv2_web_acl_logging_configuration" "trawl" {
+  count                   = local.create_waf ? 1 : 0
+  resource_arn            = aws_wafv2_web_acl.trawl[0].arn
+  log_destination_configs = [aws_cloudwatch_log_group.waf[0].arn]
+  redacted_fields {
+    single_header {
+      name = "authorization"
+    }
+  }
+  redacted_fields {
+    single_header {
+      name = "cookie"
+    }
+  }
+}
+
 resource "aws_wafv2_web_acl_association" "trawl" {
-  count        = var.waf_acl_arn == "" ? 0 : 1
+  count        = var.waf_acl_arn != "" || local.create_waf ? 1 : 0
   resource_arn = aws_lb.trawl.arn
-  web_acl_arn  = var.waf_acl_arn
+  web_acl_arn  = var.waf_acl_arn != "" ? var.waf_acl_arn : aws_wafv2_web_acl.trawl[0].arn
 }
 
 resource "aws_route53_record" "trawl" {
@@ -319,6 +455,8 @@ resource "aws_ecs_task_definition" "trawl" {
       { name = "TRAWL_TOKEN_DAYS", value = tostring(var.token_days) },
       { name = "TRAWL_TOKENS_NOT_BEFORE", value = var.tokens_not_before },
       { name = "TRAWL_REVOKED_TOKENS", value = join(",", var.revoked_tokens) },
+      { name = "TRAWL_BLOCKED_USERS", value = join(",", var.blocked_users) },
+      { name = "TRAWL_PROXY_HOPS", value = "1" },
       { name = "TMPDIR", value = "/tmp" },
     ]
     secrets = [for k in local.secret_keys : { name = k, valueFrom = "${aws_secretsmanager_secret.trawl.arn}:${k}::" }]
