@@ -3,7 +3,7 @@
 # The result is one static-ish binary (glibc only) on distroless: no shell, no package manager, non-root.
 # Base images are pinned by digest; bump them deliberately (the tag is kept for readability).
 
-FROM oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d AS build
+FROM oven/bun:1.4.5@sha256:3aa040e5445efa09d75bb428a64ba50db13e2b3ac9b6b0c7f145615f62b2ee18 AS build
 WORKDIR /src
 COPY package.json bun.lock tsconfig.json ./
 COPY stubs ./stubs
